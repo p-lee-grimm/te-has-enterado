@@ -1,0 +1,14 @@
+# runtime
+httpx[http2]==0.28.1
+feedparser==6.0.11
+PyYAML==6.0.2
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+trafilatura==2.0.0
+pydantic==2.10.6
+python-dateutil==2.9.0.post0
+rich==13.9.4
+
+# dev
+pytest==8.3.4
+numpy==2.2.1

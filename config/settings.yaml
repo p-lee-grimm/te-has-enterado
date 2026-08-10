@@ -1,0 +1,105 @@
+# Все пороги, веса и лимиты живут здесь. В коде магических чисел быть не должно.
+
+http:
+  # User-Agent честный, с контактом — требование §5.6
+  user_agent: "QuePasaBot/0.1 (+https://github.com/quepasa-digest; contact: ${CONTACT_EMAIL})"
+  timeout_seconds: 15
+  retries: 2
+  max_concurrency: 12
+  # вежливость к одному хосту: издание со 130 статьями в фиде иначе получает
+  # 130 запросов подряд и начинает отвечать ошибками
+  max_concurrency_per_host: 3
+  per_host_delay_seconds: 0.3
+  respect_robots_txt: true
+
+fetch:
+  # окно, за пределами которого записи фида игнорируются
+  max_article_age_hours: 48
+
+normalize:
+  # ниже этого порога считаем, что полный текст не достали (пейволл/заглушка)
+  min_body_chars: 400
+  body_fetch_enabled: true
+  # сколько символов тела максимум храним
+  max_body_chars: 40000
+  # §5.4 — полный текст живёт не дольше этого
+  body_retention_hours: 72
+
+embed:
+  provider: local            # voyage | openai | cohere | local (офлайн-заглушка для разработки)
+  model: voyage-3.5
+  dimensions: 1024
+  # эмбеддинг считается по title + первые N символов текста
+  body_chars: 1500
+  batch_size: 32
+
+cluster:
+  sim_threshold: 0.82        # калибруется scripts/tune_threshold.py
+  window_hours: 48           # CLUSTER_WINDOW_HOURS
+  idle_hours: 36             # CLUSTER_IDLE_HOURS
+
+rank:
+  weights:
+    n_sources: 3.0
+    lean_spread: 2.0
+    n_articles: 0.5
+    velocity: 1.5
+    agency_flag: 1.0
+  velocity_window_hours: 6
+  recency_half_life_hours: 12
+
+select:
+  max_items: 7
+  min_items: 4
+  min_unique_sources: 3
+  # правило повтора
+  repeat_min_new_articles: 3
+  repeat_min_hours: 72
+  # не больше N подряд с одной темой
+  max_same_topic_in_row: 3
+
+summarize:
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  max_articles_per_cluster: 5
+  max_chars_per_article: 3000
+  max_tokens: 1200
+  temperature: 0.2
+  retries: 1
+  # цены за миллион токенов, для подсчёта стоимости прогона
+  price_per_mtok_in: 1.0
+  price_per_mtok_out: 5.0
+
+render:
+  telegram_message_limit: 4096
+  links_per_item: 3
+  timezone: Europe/Madrid
+
+gate:
+  min_items: 4
+  min_feed_success_ratio: 0.7
+  # объём статей за сутки не ниже доли от медианы за N дней
+  volume_median_days: 14
+  min_volume_ratio: 0.4
+  url_check_enabled: true
+  url_check_max_status: 400
+  # 403/429 отдают издания с антибот-защитой (El País отвечает так и на HEAD,
+  # и на GET, хотя в браузере страница открывается). Это не битая ссылка, и
+  # ронять из-за неё выпуск нельзя — иначе важнейший источник делает продукт
+  # непубликуемым. Логируем, но не считаем провалом. 404/410/5xx — провал.
+  url_check_tolerated_statuses: [403, 429]
+  # скользящее окно для проверки на скрытое цитирование
+  plagiarism_window_words: 10
+  # §5.3 — пересказ не длиннее 4 предложений
+  max_summary_sentences: 4
+
+publish:
+  review_mode: true
+  review_timeout_hours: 3
+  # насколько поздно после назначенной минуты запуск ещё считается «тем самым»
+  schedule_tolerance_minutes: 25
+  run_hour_local: 19
+  run_minute_local: 30
+
+# Издания, попросившие исключить себя (§5.7). Отключаются немедленно.
+blocked_sources: []

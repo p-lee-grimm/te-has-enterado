@@ -1,0 +1,194 @@
+# Кандидаты фидов — НЕ рабочий конфиг.
+# Здесь могут быть битые/устаревшие URL. Проверяются скриптом:
+#   python scripts/validate_feeds.py --candidates config/sources.candidates.yaml
+# Прошедшие проверку переносятся в config/sources.yaml (флаг --write).
+#
+# Для одного издания допустимо несколько вариантов URL — берём лучший рабочий.
+
+candidates:
+  # ---------- пресса ----------
+  - id: elpais
+    name: El País
+    type: press
+    lean: center-left
+    urls:
+      - "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada"
+      - "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/espana/portada"
+      - "https://ep00.epimg.net/rss/elpais/portada.xml"
+
+  - id: eldiario
+    name: elDiario.es
+    type: press
+    lean: left
+    urls:
+      - "https://www.eldiario.es/rss/"
+      - "https://www.eldiario.es/rss/politica/"
+      - "https://www.eldiario.es/rss/section/politica/"
+
+  - id: publico
+    name: Público
+    type: press
+    lean: left
+    urls:
+      - "https://www.publico.es/rss/"
+      - "https://www.publico.es/rss/politica/"
+      - "https://www.publico.es/feed/"
+
+  - id: elmundo
+    name: El Mundo
+    type: press
+    lean: center-right
+    urls:
+      - "https://e00-elmundo.uecdn.es/elmundo/rss/portada.xml"
+      - "https://e00-elmundo.uecdn.es/elmundo/rss/espana.xml"
+      - "https://www.elmundo.es/rss/portada.xml"
+
+  - id: abc
+    name: ABC
+    type: press
+    lean: right
+    urls:
+      - "https://www.abc.es/rss/feeds/abcPortada.xml"
+      - "https://www.abc.es/rss/2.0/portada/"
+      - "https://www.abc.es/rss/feeds/abc_EspanaEspana.xml"
+
+  - id: larazon
+    name: La Razón
+    type: press
+    lean: right
+    urls:
+      - "https://www.larazon.es/rss/portada.xml"
+      - "https://www.larazon.es/rss/espana.xml"
+      - "https://www.larazon.es/feed/"
+
+  - id: lavanguardia
+    name: La Vanguardia
+    type: press
+    lean: center
+    urls:
+      - "https://www.lavanguardia.com/rss/home.xml"
+      - "https://www.lavanguardia.com/mvc/feed/rss/home"
+      - "https://www.lavanguardia.com/rss/politica.xml"
+
+  - id: elconfidencial
+    name: El Confidencial
+    type: press
+    lean: center-right
+    urls:
+      - "https://rss.elconfidencial.com/espana/"
+      - "https://rss.elconfidencial.com/"
+      - "https://www.elconfidencial.com/rss/espana/"
+
+  - id: 20minutos
+    name: 20minutos
+    type: press
+    lean: center-left
+    urls:
+      - "https://www.20minutos.es/rss/"
+      - "https://www.20minutos.es/rss/nacional/"
+
+  - id: rtve
+    name: RTVE
+    type: press
+    lean: center
+    urls:
+      - "https://api2.rtve.es/rss/temas_noticias.xml"
+      - "https://www.rtve.es/api/tematicas/81/noticias.rss"
+      - "https://api2.rtve.es/rss/noticias.xml"
+
+  - id: elespanol
+    name: El Español
+    type: press
+    lean: center-right
+    urls:
+      - "https://www.elespanol.com/rss/"
+      - "https://www.elespanol.com/rss/espana/"
+      - "https://www.elespanol.com/feed/"
+
+  - id: okdiario
+    name: OKdiario
+    type: press
+    lean: right
+    urls:
+      - "https://okdiario.com/feed"
+      - "https://okdiario.com/espana/feed"
+
+  - id: infolibre
+    name: infoLibre
+    type: press
+    lean: left
+    urls:
+      - "https://www.infolibre.es/rss/"
+      - "https://www.infolibre.es/arc/outboundfeeds/rss/?outputType=xml"
+
+  - id: cadenaser
+    name: Cadena SER
+    type: press
+    lean: center-left
+    urls:
+      - "https://cadenaser.com/rss/"
+      - "https://cadenaser.com/feed/rss/"
+      - "https://feeds.cadenaser.com/rss/"
+
+  - id: elperiodico
+    name: El Periódico
+    type: press
+    lean: center-left
+    urls:
+      - "https://www.elperiodico.com/es/rss/rss_portada.xml"
+      - "https://www.elperiodico.com/es/rss/politica/rss.xml"
+
+  - id: lasexta
+    name: laSexta
+    type: press
+    lean: center-left
+    urls:
+      # найден через --discover на главной; остальные варианты отдают 400/без дат
+      - "https://www.lasexta.com/rss/348128.xml"
+      - "https://www.lasexta.com/rss/351.xml"
+
+  # ---------- агентства ----------
+  - id: europapress
+    name: Europa Press
+    type: agency
+    lean: center
+    urls:
+      - "https://www.europapress.es/rss/rss.aspx"
+      - "https://www.europapress.es/rss/rss.aspx?ch=66"
+      - "https://www.europapress.es/nacional/rss"
+
+  - id: efe
+    name: Agencia EFE
+    type: agency
+    lean: center
+    urls:
+      - "https://efe.com/feed/"
+      - "https://efe.com/espana/feed/"
+      - "https://www.swissinfo.ch/service/rss/efe/es"
+
+  # ---------- официальные ----------
+  - id: boe
+    name: BOE
+    type: official
+    lean: center
+    urls:
+      - "https://www.boe.es/rss/boe.php"
+      - "https://www.boe.es/rss/canal.php?c=ultimas_disposiciones"
+      - "https://www.boe.es/rss/ultimas_disposiciones.php"
+
+  # Оба фида Moncloa найдены через --discover: сайт объявляет их в <link rel=alternate>.
+  - id: moncloa
+    name: La Moncloa (пресс-релизы)
+    type: official
+    lean: center
+    urls:
+      - "https://www.lamoncloa.gob.es/Paginas/rss.aspx?tipo=42"
+
+  - id: moncloa_cm
+    name: La Moncloa (Совет министров)
+    type: official
+    lean: center
+    urls:
+      # референции Совета министров — первоисточник по решениям правительства
+      - "https://www.lamoncloa.gob.es/Paginas/rss.aspx?tipo=16"
+      - "https://www.lamoncloa.gob.es/Paginas/rss.aspx?tipo=15"

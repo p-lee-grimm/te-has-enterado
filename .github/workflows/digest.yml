@@ -1,0 +1,81 @@
+name: Ежедневный выпуск
+
+on:
+  schedule:
+    # GitHub Actions понимает только UTC, а Испания переходит на летнее время.
+    # 19:30 по Мадриду — это 17:30 UTC летом (CEST) и 18:30 UTC зимой (CET).
+    # Поэтому cron срабатывает в оба часа, а лишний запуск отсекает
+    # `run.py --check-schedule` по таймзоне Europe/Madrid.
+    - cron: "30 17 * * *"
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Запустить, даже если сейчас не время по расписанию"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Только показать выпуск, не публиковать"
+        type: boolean
+        default: false
+
+concurrency:
+  group: digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    # запас на медленные фиды и вызовы LLM; в режиме ревью ещё ждём кнопку
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Проверить, наше ли это время
+        id: sched
+        if: github.event_name == 'schedule'
+        run: |
+          if python run.py --check-schedule; then
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=no"  >> "$GITHUB_OUTPUT"
+            echo "Не время запуска по Мадриду — пропускаем." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Прогон
+        if: github.event_name != 'schedule' || steps.sched.outputs.run == 'yes'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_OWNER_CHAT_ID: ${{ secrets.TELEGRAM_OWNER_CHAT_ID }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+        run: |
+          python run.py --migrate
+          # без `|| code=$?` шаг упадёт сразу: раннер выполняет скрипт как bash -e
+          code=0
+          python run.py --all ${{ inputs.dry_run && '--dry-run' || '--commit' }} || code=$?
+          # 2 = ворота качества не пропустили выпуск. Это штатный исход (§0),
+          # а не поломка: владелец уже получил личное сообщение с причиной.
+          if [ "$code" -eq 2 ]; then
+            echo "Выпуск не опубликован: не пройдены ворота качества." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Затереть просроченные тексты статей
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        # §5.4 — полный текст живёт не дольше 72 часов
+        run: python run.py --purge-bodies

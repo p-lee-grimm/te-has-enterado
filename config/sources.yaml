@@ -1,0 +1,244 @@
+# Сгенерировано scripts/validate_feeds.py --write.
+# Только проверенные фиды. lean проставляется вручную владельцем.
+# Перед правкой прогони проверку: python scripts/validate_feeds.py --check-current
+sources:
+- id: 20minutos
+  name: 20minutos
+  feed_url: https://www.20minutos.es/rss/
+  type: press
+  lean: center-left
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 147
+    content: full
+- id: abc
+  name: ABC
+  feed_url: https://www.abc.es/rss/2.0/portada/
+  type: press
+  lean: right
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 25
+    content: full
+- id: boe
+  name: BOE
+  feed_url: https://www.boe.es/rss/boe.php
+  type: official
+  lean: center
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 0
+    content: summary
+- id: elconfidencial
+  name: El Confidencial
+  feed_url: https://rss.elconfidencial.com/espana/
+  type: press
+  lean: center-right
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 11
+    content: full
+- id: eldiario
+  name: elDiario.es
+  feed_url: https://www.eldiario.es/rss/
+  type: press
+  lean: left
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 36
+    content: full
+- id: elespanol
+  name: El Español
+  feed_url: https://www.elespanol.com/rss/
+  type: press
+  lean: center-right
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 26
+    content: summary
+- id: elmundo
+  name: El Mundo
+  feed_url: https://www.elmundo.es/rss/portada.xml
+  type: press
+  lean: center-right
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 21
+    content: summary
+- id: elpais
+  name: El País
+  feed_url: https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada
+  type: press
+  lean: center-left
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 100
+    content: summary
+- id: elperiodico
+  name: El Periódico
+  feed_url: https://www.elperiodico.com/es/rss/politica/rss.xml
+  type: press
+  lean: center-left
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 19
+    content: summary
+- id: europapress
+  name: Europa Press
+  feed_url: https://www.europapress.es/rss/rss.aspx
+  type: agency
+  lean: center
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 10
+    content: summary
+- id: infolibre
+  name: infoLibre
+  feed_url: https://www.infolibre.es/rss/
+  type: press
+  lean: left
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 14
+    content: full
+- id: larazon
+  name: La Razón
+  feed_url: https://www.larazon.es/rss/espana.xml
+  type: press
+  lean: right
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 15
+    content: full
+- id: lasexta
+  name: laSexta
+  feed_url: https://www.lasexta.com/rss/348128.xml
+  type: press
+  lean: center-left
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 50
+    content: full
+- id: lavanguardia
+  name: La Vanguardia
+  feed_url: https://www.lavanguardia.com/rss/home.xml
+  type: press
+  lean: center
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 111
+    content: summary
+- id: moncloa
+  name: La Moncloa (пресс-релизы)
+  feed_url: https://www.lamoncloa.gob.es/Paginas/rss.aspx?tipo=42
+  type: official
+  lean: center
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 4
+    content: summary
+- id: moncloa_cm
+  name: La Moncloa (Совет министров)
+  feed_url: https://www.lamoncloa.gob.es/Paginas/rss.aspx?tipo=15
+  type: official
+  lean: center
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 0
+    content: summary
+- id: okdiario
+  name: OKdiario
+  feed_url: https://okdiario.com/feed
+  type: press
+  lean: right
+  weight: 1.0
+  lang: es
+  status: active
+  _checked:
+    verdict: OK
+    entries_24h: 50
+    content: full
+- id: cadenaser
+  name: Cadena SER
+  feed_url: ''
+  type: press
+  lean: center-left
+  weight: 1.0
+  lang: es
+  status: disabled
+  _reason: рабочий RSS не найден; HTML не парсим (см. §2 спеки)
+- id: efe
+  name: Agencia EFE
+  feed_url: ''
+  type: agency
+  lean: center
+  weight: 1.0
+  lang: es
+  status: disabled
+  _reason: рабочий RSS не найден; HTML не парсим (см. §2 спеки)
+- id: publico
+  name: Público
+  feed_url: ''
+  type: press
+  lean: left
+  weight: 1.0
+  lang: es
+  status: disabled
+  _reason: рабочий RSS не найден; HTML не парсим (см. §2 спеки)
+- id: rtve
+  name: RTVE
+  feed_url: ''
+  type: press
+  lean: center
+  weight: 1.0
+  lang: es
+  status: disabled
+  _reason: рабочий RSS не найден; HTML не парсим (см. §2 спеки)
