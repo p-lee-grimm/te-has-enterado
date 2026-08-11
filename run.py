@@ -53,7 +53,11 @@ def main() -> int:
     ap.add_argument("--check-facts", action="store_true",
                     help="сверить опубликованные посты с текущими источниками")
     ap.add_argument("--process-callbacks", action="store_true",
-                    help="разобрать нажатия кнопок в чате ревью")
+                    help="разобрать нажатия кнопок в чате ревью (один раз)")
+    ap.add_argument("--serve-callbacks", action="store_true",
+                    help="слушать нажатия постоянно: отвечать надо за секунды")
+    ap.add_argument("--poll-timeout", type=int, default=25,
+                    help="сколько секунд ждать обновления при --serve-callbacks")
     ap.add_argument("--purge-embeddings", action="store_true",
                     help="затереть векторы у старых статей (база перестаёт расти)")
     ap.add_argument("--reembed", action="store_true",
@@ -121,6 +125,26 @@ def main() -> int:
         log.info("Ревью: утверждено %s, удалено %s, правок %s",
                  st["approved"], st["deleted"], st["edited"])
         return 0
+
+    if args.serve_callbacks:
+        # Долгое ожидание вместо опроса по расписанию: ответ на нажатие
+        # Telegram принимает считаные секунды, и разбор раз в две минуты
+        # опаздывал всегда — владелец видел мёртвую кнопку.
+        import time as _time
+
+        from quepasa.cards import process_callbacks
+        log.info("Слушаю нажатия (долгое ожидание %s с)", args.poll_timeout)
+        while True:
+            try:
+                st = process_callbacks(timeout=args.poll_timeout)
+                if st["approved"] or st["deleted"] or st["edited"] or st.get("taps"):
+                    log.info("Ревью: утверждено %s, удалено %s, правок %s",
+                             st["approved"], st["deleted"], st["edited"])
+            except KeyboardInterrupt:
+                return 0
+            except Exception:  # noqa: BLE001 — служба не должна умирать от сбоя
+                log.exception("Разбор нажатий сорвался, продолжаю через 15 с")
+                _time.sleep(15)
 
     if args.purge_embeddings:
         from quepasa.config import get_settings as _gs

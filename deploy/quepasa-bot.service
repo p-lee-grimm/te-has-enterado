@@ -1,0 +1,30 @@
+# Разбор нажатий кнопок в чате ревью.
+#
+# Отдельная служба, а не задача крона: ответ на callback_query Telegram
+# принимает считаные секунды, поэтому опрос по расписанию опаздывает всегда —
+# как бы часто он ни ходил. Служба висит на долгом ожидании и отвечает сразу.
+#
+# Установка (от пользователя admin):
+#   mkdir -p ~/.config/systemd/user
+#   cp ~/quepasa/deploy/quepasa-bot.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now quepasa-bot
+#   sudo loginctl enable-linger admin      # чтобы служба пережила выход из ssh
+#
+# Публикацию она не трогает: getUpdates двигает общий offset, и второй
+# читатель делил бы нажатия с ней пополам, поэтому из publish.sh разбор убран.
+
+[Unit]
+Description=Que Pasa: разбор нажатий в чате ревью
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/quepasa
+EnvironmentFile=%h/quepasa/.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/quepasa/.venv/bin/python run.py --serve-callbacks
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

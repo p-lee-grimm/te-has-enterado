@@ -414,10 +414,16 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
         log.warning("getUpdates: %s", exc)
         return stats
 
-    last = None
+    # Приём подтверждаем СРАЗУ, до обработки. Иначе долгий или упавший прогон
+    # вернётся к тому же нажатию в следующий раз — карточка пересобирается
+    # заново, за модель платим снова, и так по кругу каждые две минуты.
+    # Потерять одно нажатие при сбое дешевле, чем зациклить его навсегда.
+    if updates:
+        with connect() as conn:
+            _set_state(conn, "updates_offset", str(updates[-1]["update_id"] + 1))
+
     unhandled = 0
     for upd in updates:
-        last = upd["update_id"] + 1
         handled = False
 
         cq = upd.get("callback_query")
@@ -585,13 +591,7 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
             unhandled += 1
 
     if unhandled:
-        # смещение всё равно двигаем — иначе одно чужое обновление
-        # заблокирует очередь навсегда, — но молчать об этом нельзя
         log.info("Пропущено обновлений, не относящихся к ревью: %s", unhandled)
-
-    if last is not None:
-        with connect() as conn:
-            _set_state(conn, "updates_offset", str(last))
     return stats
 
 

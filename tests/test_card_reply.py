@@ -146,3 +146,34 @@ class TestReviewButtons:
         data = self._markup(monkeypatch, [])
         assert "card:ok:javier-negre" in data
         assert "card:news:javier-negre" in data
+
+
+class TestOffsetAdvance:
+    """Смещение двигается ДО обработки: иначе нажатие повторяется вечно."""
+
+    def test_offset_saved_before_slow_work(self, monkeypatch):
+        import quepasa.cards as cards
+        saved, order = {}, []
+
+        class Conn:
+            def execute(self, sql, params=None):
+                if "bot_state" in sql and sql.strip().upper().startswith("INSERT"):
+                    order.append("offset")
+                    saved["offset"] = params[1]
+                return type("R", (), {"fetchone": lambda s: None})()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        import quepasa.db as db
+        monkeypatch.setattr(db, "connect", lambda *a, **k: Conn())
+        monkeypatch.setattr(cards, "_state", lambda conn, key: None)
+        import quepasa.telegram as tg
+        monkeypatch.setattr(tg, "get_updates",
+                            lambda offset=None, timeout=0: [{"update_id": 700}])
+        monkeypatch.setattr(tg, "answer_callback", lambda *a: None)
+        monkeypatch.setattr(tg, "edit_reply_markup", lambda *a: None)
+        monkeypatch.setattr(tg, "notify_owner", lambda *a, **k: order.append("work"))
+
+        cards.process_callbacks()
+        assert saved["offset"] == "701", "подтверждаем приём сразу после получения"
+        assert order[0] == "offset", "иначе долгий прогон вернётся к тому же нажатию"
