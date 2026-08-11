@@ -122,18 +122,23 @@ def remember_unresolved(conn, surface: str, candidate: str | None,
 
     conn.execute(
         """
-        INSERT INTO entity_unresolved (surface, candidate_id, sample_context, sample_urls)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO entity_unresolved
+            (surface, surface_raw, candidate_id, sample_context, sample_urls)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (surface) DO UPDATE
             SET count = entity_unresolved.count + 1,
                 last_seen = now(),
                 candidate_id = COALESCE(entity_unresolved.candidate_id, EXCLUDED.candidate_id),
+                -- исходное написание нужно с диакритикой: из «oscar puente»
+                -- не собрать «Óscar Puente» ни для имени, ни для Википедии
+                surface_raw = COALESCE(entity_unresolved.surface_raw, EXCLUDED.surface_raw),
                 -- ссылки держим от первой встречи: она и есть повод завести
                 sample_urls = CASE
                     WHEN entity_unresolved.sample_urls = '[]'::jsonb
                     THEN EXCLUDED.sample_urls ELSE entity_unresolved.sample_urls END
         """,
-        (normalize(surface), candidate, context[:300], _json.dumps(urls, ensure_ascii=False)),
+        (normalize(surface), (surface or "").strip(), candidate, context[:300],
+         _json.dumps(urls, ensure_ascii=False)),
     )
 
 
@@ -283,15 +288,30 @@ def mark_shown(conn, entities: list[dict[str, Any]], cluster_id: int | None,
             )
 
 
+def _clip(text: str, limit: int) -> str:
+    """Обрезка по границе слова: «critica que no impidiese» читается,
+    «critica que no impidies» выглядит поломкой."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return (cut or text[:limit]) + "…"
+
+
+def entity_slug(name: str) -> str:
+    """Имя -> id сущности: «Óscar Puente» -> «oscar-puente»."""
+    return "-".join(normalize(name).split())
+
+
 def notify_new_unresolved(conn, min_count: int | None = None) -> int:
-    """Сообщает в чат ревью о новых неразрешённых сущностях.
+    """Предлагает завести сущность — сообщением с кнопками, по одному на имя.
 
-    Одним сообщением, а не по штуке на каждую: очередь наполняется быстрее,
-    чем владелец успевает её разбирать, и поштучные уведомления она бы
-    превратила в шум, который перестают читать.
+    По одному, а не пачкой: у каждого имени своё решение, а решение в Telegram
+    выражается кнопкой. Пачка экономит уведомления, но действовать по ней
+    можно только из консоли, которой у владельца под рукой нет, — очередь
+    тогда просто копится, а посты выходят с именами, не знакомыми читателю.
 
-    Порог по частоте отсекает разовые: имя, встретившееся один раз, скорее
-    всего больше не появится, и заводить под него сущность незачем.
+    Порог по частоте задаётся в конфиге; см. entities.notify_min_count.
     """
     from .telegram import notify_owner
 
@@ -299,45 +319,111 @@ def notify_new_unresolved(conn, min_count: int | None = None) -> int:
     threshold = min_count if min_count is not None else int(
         s.get_path("entities.notify_min_count", 2)
     )
+    limit = int(s.get_path("entities.notify_max_per_run", 8))
 
     rows = conn.execute(
         """
-        SELECT surface, count, candidate_id, sample_context, sample_urls
+        SELECT id, surface, surface_raw, count, candidate_id, sample_urls
         FROM entity_unresolved
-        WHERE notified_at IS NULL AND count >= %s
+        WHERE notified_at IS NULL AND ignored_at IS NULL AND count >= %s
         ORDER BY count DESC, last_seen DESC
-        LIMIT 15
+        LIMIT %s
         """,
-        (threshold,),
+        (threshold, limit),
     ).fetchall()
     if not rows:
         return 0
 
-    lines = ["<b>Новые сущности в очереди</b>", ""]
     for r in rows:
-        hint = f" — похоже на <code>{r['candidate_id']}</code>" if r["candidate_id"] else ""
-        lines.append(f"• <b>{html.escape(r['surface'])}</b> ×{r['count']}{hint}")
-        # ссылка на новость: по ней и понятно, кто это
-        for u in (r["sample_urls"] or [])[:2]:
-            lines.append(
-                f'   ↳ <a href="{html.escape(u["url"], quote=True)}">'
-                f'{html.escape(u["title"][:64])}</a> — {html.escape(u["source"])}'
-            )
-    lines += [
-        "",
-        "Завести — карточку соберёт Википедия, тебе останется нажать «Одобрить»:",
-        "<pre>python manage.py entity add &lt;id&gt; --name-es «Имя»</pre>",
-        "Свой текст, если в Википедии не нашлось: <code>--card «до 200 символов»</code>",
-        "Или добавить алиасом к существующей:",
-        "<pre>python manage.py entity alias &lt;id&gt; «строка»</pre>",
-    ]
-    notify_owner("\n".join(lines))
+        name = r["surface_raw"] or r["surface"]
+        lines = [
+            f"🆕 <b>{html.escape(name)}</b>",
+            f"<i>Имя из вышедшего поста, карточки нет. Упоминаний: {r['count']}.</i>",
+        ]
+        urls = r["sample_urls"] or []
+        if urls:
+            lines += ["", "<b>Где встретилось:</b>"]
+            for u in urls[:3]:
+                lines.append(
+                    f'• <a href="{html.escape(u["url"], quote=True)}">'
+                    f'{html.escape(_clip(u["title"], 80))}</a> — {html.escape(u["source"])}'
+                )
+
+        keyboard = [[
+            {"text": "✅ Завести", "callback_data": f"unres:add:{r['id']}"},
+            {"text": "✖️ Не нужно", "callback_data": f"unres:skip:{r['id']}"},
+        ]]
+        # Похожее имя уже заведено — почти всегда это другое написание, и
+        # правильный ответ не «завести вторую», а «дописать алиасом».
+        if r["candidate_id"]:
+            keyboard.insert(0, [{
+                "text": f"🔗 Это {r['candidate_id']}",
+                "callback_data": f"unres:alias:{r['id']}",
+            }])
+        notify_owner("\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
     conn.execute(
-        "UPDATE entity_unresolved SET notified_at = now() WHERE surface = ANY(%s)",
-        ([r["surface"] for r in rows],),
+        "UPDATE entity_unresolved SET notified_at = now() WHERE id = ANY(%s)",
+        ([r["id"] for r in rows],),
     )
     return len(rows)
+
+
+def act_on_unresolved(conn, unres_id: int, action: str) -> tuple[str | None, str]:
+    """Обрабатывает нажатие на предложении. Возвращает (entity_id, ответ владельцу).
+
+    entity_id непустой только тогда, когда для сущности надо собрать карточку.
+    """
+    row = conn.execute(
+        "SELECT * FROM entity_unresolved WHERE id = %s", (unres_id,)
+    ).fetchone()
+    if row is None:
+        return None, "Этой строки в очереди уже нет"
+
+    name = (row["surface_raw"] or row["surface"]).strip()
+
+    if action == "skip":
+        conn.execute(
+            "UPDATE entity_unresolved SET ignored_at = now() WHERE id = %s", (unres_id,)
+        )
+        return None, f"{name}: больше не предлагаю"
+
+    if action == "alias":
+        target = row["candidate_id"]
+        if not target:
+            return None, "Не к чему привязывать"
+        conn.execute(
+            "INSERT INTO entity_aliases (entity_id, alias) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING", (target, row["surface"]),
+        )
+        conn.execute("DELETE FROM entity_unresolved WHERE id = %s", (unres_id,))
+        return None, f"{name} → {target}"
+
+    entity_id = entity_slug(name)
+    if not entity_id:
+        return None, "Из этого имени не выходит идентификатор"
+
+    # Сущность с таким id уже есть — значит, не сматчилось написание, а не
+    # появился новый человек. Вторая запись развела бы факты по двум карточкам.
+    exists = conn.execute(
+        "SELECT id FROM entities WHERE id = %s", (entity_id,)
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO entities (id, name_es, type, card, card_status) "
+            "VALUES (%s, %s, 'other', '', 'draft')",
+            (entity_id, name),
+        )
+
+    conn.execute(
+        "INSERT INTO entity_aliases (entity_id, alias) VALUES (%s, %s) "
+        "ON CONFLICT DO NOTHING", (entity_id, row["surface"]),
+    )
+    conn.execute("DELETE FROM entity_unresolved WHERE id = %s", (unres_id,))
+
+    if exists:
+        return None, f"{name}: добавлено написанием к {entity_id}"
+    return entity_id, f"{name}: собираю карточку…"
 
 
 # ------------------------------------------------------- замерный режим

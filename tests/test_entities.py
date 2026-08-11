@@ -203,7 +203,7 @@ class TestContextMark:
 
 
 class TestUnresolvedNotification:
-    """Очередь — рабочий список владельца, а не служебная таблица."""
+    """Предложение приходит в Telegram, значит действие — это кнопка."""
 
     class Conn:
         def __init__(self, rows): self.rows, self.updated = rows, False
@@ -213,57 +213,175 @@ class TestUnresolvedNotification:
                 return type("R", (), {"fetchone": lambda s: None})()
             return type("R", (), {"fetchall": lambda s: self.rows})()
 
-    def _row(self, surface, count=2, cand=None, urls=None):
-        return {"surface": surface, "count": count, "candidate_id": cand,
-                "sample_context": "", "sample_urls": urls or []}
+    def _row(self, surface, count=2, cand=None, urls=None, raw=None, id=1):
+        return {"id": id, "surface": surface, "surface_raw": raw or surface,
+                "count": count, "candidate_id": cand, "sample_urls": urls or []}
 
-    def test_sends_one_batched_message(self, monkeypatch):
-        import quepasa.entities as en
-        sent = []
+    @staticmethod
+    def _capture(monkeypatch):
+        """Собирает (текст, разметка) каждого отправленного сообщения."""
         import quepasa.telegram as tg
-        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: sent.append(t))
-        conn = self.Conn([self._row("galan"), self._row("infantino")])
+        sent = []
+        monkeypatch.setattr(
+            tg, "notify_owner",
+            lambda t, **k: sent.append((t, k.get("reply_markup"))),
+        )
+        return sent
+
+    def test_one_message_per_name_each_with_buttons(self, monkeypatch):
+        """Пачкой нельзя: у каждого имени своё решение, а решение — кнопка."""
+        import quepasa.entities as en
+        sent = self._capture(monkeypatch)
+        conn = self.Conn([self._row("galan", id=1), self._row("infantino", id=2)])
         assert en.notify_new_unresolved(conn, min_count=2) == 2
-        # одно сообщение, а не по штуке на сущность
-        assert len(sent) == 1
-        assert "galan" in sent[0] and "infantino" in sent[0]
+        assert len(sent) == 2
+        for _text, markup in sent:
+            assert markup is not None, "без кнопок сообщение бесполезно"
+
+    def test_buttons_carry_row_id(self, monkeypatch):
+        import quepasa.entities as en
+        sent = self._capture(monkeypatch)
+        en.notify_new_unresolved(self.Conn([self._row("galan", id=42)]), min_count=2)
+        data = [b["callback_data"] for row in sent[0][1]["inline_keyboard"] for b in row]
+        assert "unres:add:42" in data
+        assert "unres:skip:42" in data
+
+    def test_no_shell_commands_in_message(self, monkeypatch):
+        """Инструкция для консоли в чате — это тупик: выполнить её негде."""
+        import quepasa.entities as en
+        sent = self._capture(monkeypatch)
+        en.notify_new_unresolved(self.Conn([self._row("galan")]), min_count=2)
+        assert "manage.py" not in sent[0][0]
+
+    def test_shows_original_spelling(self, monkeypatch):
+        """В surface лежит «oscar puente» — показывать надо «Óscar Puente»."""
+        import quepasa.entities as en
+        sent = self._capture(monkeypatch)
+        en.notify_new_unresolved(
+            self.Conn([self._row("oscar puente", raw="Óscar Puente")]), min_count=2)
+        assert "Óscar Puente" in sent[0][0]
 
     def test_includes_source_links(self, monkeypatch):
         """Без ссылки на новость решить, кто это, невозможно."""
         import quepasa.entities as en
-        import quepasa.telegram as tg
-        sent = []
-        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: sent.append(t))
+        sent = self._capture(monkeypatch)
         urls = [{"title": "Galán denuncia a Infantino", "source": "El Español",
                  "url": "https://elespanol.com/x"}]
         en.notify_new_unresolved(self.Conn([self._row("galan", urls=urls)]), min_count=2)
-        assert "https://elespanol.com/x" in sent[0]
-        assert "Galán denuncia" in sent[0]
+        assert "https://elespanol.com/x" in sent[0][0]
+        assert "Galán denuncia" in sent[0][0]
 
-    def test_includes_candidate_hint(self, monkeypatch):
+    def test_long_title_clipped_on_word_boundary(self, monkeypatch):
         import quepasa.entities as en
-        sent = []
-        import quepasa.telegram as tg
-        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: sent.append(t))
-        en.notify_new_unresolved(self.Conn([self._row("sanches", cand="pedro-sanchez")]),
-                                 min_count=2)
-        assert "pedro-sanchez" in sent[0]
+        sent = self._capture(monkeypatch)
+        urls = [{"title": "Óscar Puente apunta al rey Felipe VI y critica que no "
+                          "impidiese el saludo al activista de ultraderecha",
+                 "source": "20minutos", "url": "https://x.es/1"}]
+        en.notify_new_unresolved(self.Conn([self._row("galan", urls=urls)]), min_count=2)
+        assert "…" in sent[0][0]
+        assert "impidies…" not in sent[0][0], "обрыв посреди слова читается как поломка"
+
+    def test_alias_button_only_with_candidate(self, monkeypatch):
+        import quepasa.entities as en
+        sent = self._capture(monkeypatch)
+        en.notify_new_unresolved(
+            self.Conn([self._row("sanches", cand="pedro-sanchez", id=7)]), min_count=2)
+        data = [b["callback_data"] for row in sent[0][1]["inline_keyboard"] for b in row]
+        assert "unres:alias:7" in data
+
+        sent.clear()
+        en.notify_new_unresolved(self.Conn([self._row("galan", id=8)]), min_count=2)
+        data = [b["callback_data"] for row in sent[0][1]["inline_keyboard"] for b in row]
+        assert not any(d.startswith("unres:alias") for d in data)
 
     def test_silent_when_queue_empty(self, monkeypatch):
         import quepasa.entities as en
-        sent = []
-        import quepasa.telegram as tg
-        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: sent.append(t))
+        sent = self._capture(monkeypatch)
         assert en.notify_new_unresolved(self.Conn([]), min_count=2) == 0
         assert not sent
 
     def test_marks_as_notified(self, monkeypatch):
         import quepasa.entities as en
-        import quepasa.telegram as tg
-        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: None)
+        self._capture(monkeypatch)
         conn = self.Conn([self._row("x")])
         en.notify_new_unresolved(conn, min_count=2)
         assert conn.updated, "без отметки очередь пришлёт то же самое в следующий прогон"
+
+
+class TestUnresolvedActions:
+    """Что делает нажатие. Автосоздание запрещено — но нажатие и есть решение."""
+
+    class Conn:
+        def __init__(self, row, entity_exists=False):
+            self.row, self.entity_exists, self.sql = row, entity_exists, []
+
+        def execute(self, sql, params=None):
+            self.sql.append((" ".join(sql.split()), params))
+            up = sql.strip().upper()
+            if up.startswith("SELECT * FROM ENTITY_UNRESOLVED"):
+                row = self.row
+                return type("R", (), {"fetchone": lambda s: row})()
+            if up.startswith("SELECT ID FROM ENTITIES"):
+                found = {"id": "x"} if self.entity_exists else None
+                return type("R", (), {"fetchone": lambda s: found})()
+            return type("R", (), {"fetchone": lambda s: None})()
+
+        def ran(self, needle):
+            return [(s, p) for s, p in self.sql if needle in s]
+
+    def _row(self, raw="Óscar Puente", cand=None):
+        return {"id": 5, "surface": "oscar puente", "surface_raw": raw,
+                "count": 1, "candidate_id": cand, "sample_urls": []}
+
+    def test_add_creates_entity_with_spanish_name(self):
+        from quepasa.entities import act_on_unresolved
+        conn = self.Conn(self._row())
+        entity_id, answer = act_on_unresolved(conn, 5, "add")
+        assert entity_id == "oscar-puente"
+        ins = conn.ran("INSERT INTO entities")
+        assert ins and ins[0][1] == ("oscar-puente", "Óscar Puente")
+        assert "Óscar Puente" in answer
+
+    def test_add_records_alias_so_it_matches_next_time(self):
+        from quepasa.entities import act_on_unresolved
+        conn = self.Conn(self._row())
+        act_on_unresolved(conn, 5, "add")
+        assert conn.ran("INSERT INTO entity_aliases")
+
+    def test_add_on_existing_entity_does_not_duplicate(self):
+        """Тот же slug — это другое написание, а не второй человек."""
+        from quepasa.entities import act_on_unresolved
+        conn = self.Conn(self._row(), entity_exists=True)
+        entity_id, _ = act_on_unresolved(conn, 5, "add")
+        assert entity_id is None, "карточку заново не собираем"
+        assert not conn.ran("INSERT INTO entities")
+        assert conn.ran("INSERT INTO entity_aliases")
+
+    def test_skip_is_remembered(self):
+        """Иначе имя вернётся в очередь при следующем упоминании."""
+        from quepasa.entities import act_on_unresolved
+        conn = self.Conn(self._row())
+        entity_id, _ = act_on_unresolved(conn, 5, "skip")
+        assert entity_id is None
+        assert conn.ran("SET ignored_at = now()")
+
+    def test_alias_attaches_to_candidate(self):
+        from quepasa.entities import act_on_unresolved
+        conn = self.Conn(self._row(cand="pedro-sanchez"))
+        act_on_unresolved(conn, 5, "alias")
+        ins = conn.ran("INSERT INTO entity_aliases")
+        assert ins and ins[0][1] == ("pedro-sanchez", "oscar puente")
+
+    def test_missing_row_is_reported_not_crashed(self):
+        from quepasa.entities import act_on_unresolved
+        conn = self.Conn(None)
+        entity_id, answer = act_on_unresolved(conn, 5, "add")
+        assert entity_id is None and "уже нет" in answer
+
+    def test_slug_strips_accents(self):
+        from quepasa.entities import entity_slug
+        assert entity_slug("Óscar Puente") == "oscar-puente"
+        assert entity_slug("Felipe VI") == "felipe-vi"
 
 
 class TestMeasureMode:

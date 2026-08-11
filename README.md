@@ -222,6 +222,7 @@ docker run -d --name quepasa-pg --restart unless-stopped \
 
 ```
 7 * * * *        bin/cycle.sh     сбор, эмбеддинги, кластеризация, уборка
+*/2 * * * *      bin/callbacks.sh нажатия кнопок (лок общий с publish)
 */30 * * * *     bin/publish.sh   нажатия, автопостинг, дополнение, сверка фактов
 25,30 19,20 * *  bin/evening.sh   вечерний пост (час сверяется по Мадриду в коде)
 ```

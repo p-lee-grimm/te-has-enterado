@@ -337,6 +337,42 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
             stats["taps"] = stats.get("taps", 0) + 1
             continue
 
+        # предложение из очереди: завести / привязать написанием / отклонить
+        if cq and data.startswith("unres:"):
+            _, action, unres_id = data.split(":", 2)
+            from .entities import act_on_unresolved
+            with connect() as conn:
+                entity_id, answer = act_on_unresolved(conn, int(unres_id), action)
+            answer_callback(cq["id"], answer)
+            msg = cq.get("message") or {}
+            if msg:
+                edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
+
+            # карточку собираем сразу же: владелец нажал кнопку и ждёт ответа,
+            # а не следующего прогона по расписанию
+            if entity_id:
+                with connect() as conn:
+                    e = conn.execute(
+                        "SELECT * FROM entities WHERE id = %s", (entity_id,)
+                    ).fetchone()
+                try:
+                    draft = generate(e["name_es"], e["wiki_url_es"] or None)
+                except CardError as exc:
+                    # без статьи карточки нет, но сущность уже заведена:
+                    # показываем её с причиной, текст можно прислать реплаем
+                    draft = {"card": "", "problems": [str(exc)], "wiki_url": None,
+                             "cost_usd": 0.0}
+                else:
+                    with connect() as conn:
+                        conn.execute(
+                            "UPDATE entities SET card=%s, wiki_url_es=%s, "
+                            "card_updated_at=now() WHERE id=%s",
+                            (draft["card"], draft["wiki_url"], entity_id),
+                        )
+                send_for_review(dict(e), draft)
+                stats["generated"] = stats.get("generated", 0) + 1
+            continue
+
         if cq and data.startswith("card:"):
             _, action, entity_id = data.split(":", 2)
             with connect() as conn:
