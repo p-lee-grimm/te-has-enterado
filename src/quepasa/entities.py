@@ -325,9 +325,9 @@ def notify_new_unresolved(conn, min_count: int | None = None) -> int:
             )
     lines += [
         "",
-        "Завести:",
-        "<pre>python manage.py entity add &lt;id&gt; \\\n"
-        "  --name-es «Имя» --card «Кто это, до 200 символов»</pre>",
+        "Завести — карточку соберёт Википедия, тебе останется нажать «Одобрить»:",
+        "<pre>python manage.py entity add &lt;id&gt; --name-es «Имя»</pre>",
+        "Свой текст, если в Википедии не нашлось: <code>--card «до 200 символов»</code>",
         "Или добавить алиасом к существующей:",
         "<pre>python manage.py entity alias &lt;id&gt; «строка»</pre>",
     ]
