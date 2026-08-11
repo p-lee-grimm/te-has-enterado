@@ -10,7 +10,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import get_settings
 from .db import connect
 
 
@@ -70,7 +69,6 @@ def collect() -> dict[str, Any]:
 
 def checks(data: dict[str, Any]) -> list[tuple[str, bool, str]]:
     """(что проверяем, в порядке ли, что показать). Порядок — от важного."""
-    s = get_settings()
     out: list[tuple[str, bool, str]] = []
 
     age = data["fetch_age_h"]
@@ -99,7 +97,9 @@ def checks(data: dict[str, Any]) -> list[tuple[str, bool, str]]:
     out.append(("сюжетов с ≥3 источниками", c["big"] > 0, str(c["big"])))
 
     page = data["post_age_h"]
-    enabled = bool(s.get_path("autopost.enabled", False))
+    from .posts import autopost_enabled
+
+    enabled = autopost_enabled()
     out.append((
         "публикация",
         enabled,

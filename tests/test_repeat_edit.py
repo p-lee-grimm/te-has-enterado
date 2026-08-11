@@ -154,3 +154,33 @@ class TestReviewCallbacks:
         prefixes = {"card:", "edit:", "post:"}
         assert len(prefixes) == 3
         assert not any(a != b and a.startswith(b) for a in prefixes for b in prefixes)
+
+
+class TestAutopostSwitch:
+    """Переключатель публикации: env важнее конфига (иначе deploy его затрёт)."""
+
+    def test_env_true_overrides_config(self, monkeypatch):
+        import quepasa.posts as p
+        monkeypatch.setattr(p, "env", lambda k, d="": "true" if k == "AUTOPOST_ENABLED" else d)
+        assert p.autopost_enabled()
+
+    def test_env_false_overrides_config(self, monkeypatch):
+        import quepasa.posts as p
+        from quepasa.config import get_settings
+        get_settings()["autopost"]["enabled"] = True
+        try:
+            monkeypatch.setattr(p, "env",
+                                lambda k, d="": "false" if k == "AUTOPOST_ENABLED" else d)
+            assert not p.autopost_enabled()
+        finally:
+            get_settings()["autopost"]["enabled"] = False
+
+    def test_falls_back_to_config(self, monkeypatch):
+        import quepasa.posts as p
+        from quepasa.config import get_settings
+        monkeypatch.setattr(p, "env", lambda k, d="": d)
+        get_settings()["autopost"]["enabled"] = True
+        try:
+            assert p.autopost_enabled()
+        finally:
+            get_settings()["autopost"]["enabled"] = False

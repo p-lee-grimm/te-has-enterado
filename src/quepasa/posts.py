@@ -1016,6 +1016,23 @@ def digest_clusters(conn, *, ignore_time: bool = False) -> list[dict[str, Any]]:
     return picked[:max_lines]
 
 
+def autopost_enabled() -> bool:
+    """Включена ли автопубликация.
+
+    Переменная окружения важнее конфига. Причина операционная: конфиг лежит
+    в репозитории, и любое обновление сервера через `git reset --hard`
+    затирает правку — публикация выключается молча, и заметить это можно
+    только по тишине в канале. В .env, который в git не попадает, такого
+    не случится.
+    """
+    raw = env("AUTOPOST_ENABLED", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return bool(get_settings().get_path("autopost.enabled", False))
+
+
 def send_post_for_review(cluster_id: int, cards: list[dict[str, Any]] | None = None) -> None:
     """Готовый пост уходит владельцу с кнопками вместо канала (§9)."""
     from .entities import render_cards_html
@@ -1059,7 +1076,7 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
     now = datetime.now(tz)
 
     stats: dict[str, Any] = {
-        "enabled": bool(s.get_path("autopost.enabled", False)),
+        "enabled": autopost_enabled(),
         "candidates": 0, "published": 0, "skipped": 0, "errors": 0, "items": [],
     }
 
