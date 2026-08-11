@@ -146,7 +146,8 @@ def cmd_backfill(args) -> int:
             WHERE card_status = 'approved' AND NOT never_explain
               AND btrim(card) <> ''
               -- приведение обязательно: без него Postgres не выводит тип
-              -- параметра в «%s IS NULL» и падает на IndeterminateDatatype
+              -- параметра в проверке на NULL и падает на IndeterminateDatatype.
+              -- Плейсхолдер в комментарии тоже считается — писать его нельзя.
               AND (%s::text IS NULL OR id = %s::text)
             ORDER BY mentions_count ASC, id
             """,
