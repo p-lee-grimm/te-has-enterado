@@ -200,32 +200,31 @@ def news_source_text(conn, name: str, limit: int = 8) -> str:
     )
 
 
-def generate_from_news(name: str, source_text: str) -> dict[str, Any]:
-    """Карточка по новостям, когда в Википедии статьи нет.
+def generate_from_knowledge(name: str, hint_text: str = "") -> dict[str, Any]:
+    """Карточка по знаниям модели, когда в Википедии статьи нет.
 
-    Проверки те же, что и для энциклопедии: длина, запрещённые обороты,
-    сверка с источником. Источник слабее, поэтому пустой ответ модели —
-    штатный исход, а не ошибка.
+    Сверки с источником здесь нет и быть не может: источник — сама модель.
+    Владелец видит пометку и правит текст реплаем, если что-то не так, —
+    это его осознанный выбор в обмен на то, что карточка вообще появится.
+
+    Отрывки новостей идут в подсказку не как источник фактов, а чтобы
+    отличить нужного человека от однофамильца.
     """
-    if not source_text.strip():
-        raise CardError(f"новостей с упоминанием «{name}» не осталось в базе")
-
     usage = LLMUsage()
-    data = _llm_json(
-        load_prompt("entity_card_news.md"),
-        f"Имя: {name}\n\nНовости:\n{source_text[:6000]}",
-        usage,
-    )
+    user = f"Имя: {name}"
+    if hint_text.strip():
+        user += f"\n\nГде встретилось (для опознания, не как источник):\n{hint_text[:4000]}"
+
+    data = _llm_json(load_prompt("entity_card_claude.md"), user, usage)
     card = (data.get("card") or "").strip()
     if not card:
-        raise CardError("по новостям не удалось понять, кто это — "
-                        "нужен текст карточки от тебя")
+        raise CardError("модель не уверена, кто это — нужен текст карточки от тебя")
 
-    problems = validate(card, source_text)
-    if not problems:
-        problems = verify_against_source(card, source_text, usage)
+    # Проверяем только форму: длина и запрещённые обороты. Сверять с текстом
+    # новостей нельзя — модель писала не по ним, и верные факты отсеялись бы.
+    problems = validate(card, "")
     return {"card": card, "problems": problems, "wiki_url": None,
-            "source_text": source_text, "cost_usd": usage.cost_usd}
+            "from_model": True, "cost_usd": usage.cost_usd}
 
 
 def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
@@ -237,7 +236,13 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     draft = {**draft, "news_urls": draft.get("news_urls") or news_urls_for(entity)}
 
     problems = draft.get("problems") or []
-    head = "⚠️ <b>Карточка не прошла проверку</b>" if problems else "<b>Новая карточка</b>"
+    if problems:
+        head = "⚠️ <b>Карточка не прошла проверку</b>"
+    elif draft.get("from_model"):
+        # источник — знания модели, сверять не с чем; владелец знает и проверит
+        head = "🤖 <b>Карточка со слов модели</b>"
+    else:
+        head = "<b>Новая карточка</b>"
     lines = [
         head,
         "",
@@ -249,6 +254,9 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     ]
     if draft.get("wiki_url"):
         lines.append(f'Источник: <a href="{draft["wiki_url"]}">Википедия</a>')
+    elif draft.get("from_model"):
+        lines.append("<i>Источник — знания модели, не сверено со статьёй. "
+                     "Проверь и поправь реплаем, если что-то не так.</i>")
 
     # ссылки на новости, где имя встретилось: без них решить, тот ли это
     # человек, невозможно — а именно это и надо решить
@@ -272,14 +280,15 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     if problems:
         lines += ["", "<i>Утвердить нельзя, пока не подтверждена личность. "
                       "Пришли реплаем ссылку на статью Википедии или текст "
-                      "карточки — или собери по новостям.</i>"]
+                      "карточки — или собери через Claude.</i>"]
     else:
         lines += ["", "<i>Ответь реплаем, чтобы заменить текст карточки.</i>"]
 
     # Утверждение «в один тап» даём только чистому черновику: подтвердить
-    # непроверенное одним нажатием — самый простой способ протащить ошибку.
-    # Пересборка по новостям — не утверждение, она делает лишь новый черновик,
-    # поэтому доступна всегда и особенно нужна как раз при проблемах.
+    # одним нажатием то, что не прошло проверку, — простейший способ
+    # протащить ошибку. Карточка со слов модели проверку проходит: она
+    # помечена, и владелец решил, что правит её сам.
+    # Пересборка — не утверждение, поэтому доступна всегда.
     rows = []
     if not problems:
         rows.append([
@@ -287,7 +296,7 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
             {"text": "🗑 Удалить", "callback_data": f"card:del:{entity['id']}"},
         ])
     rows.append([
-        {"text": "🤖 Собрать по новостям", "callback_data": f"card:news:{entity['id']}"},
+        {"text": "🤖 Собрать через Claude", "callback_data": f"card:gen:{entity['id']}"},
     ])
     if problems:
         rows[-1].append(
@@ -350,8 +359,8 @@ def _regenerate_from_url(entity_id: str, wiki_url: str) -> None:
     send_for_review(dict(e), draft)
 
 
-def _regenerate_from_news(entity_id: str) -> None:
-    """Пересобирает карточку по новостям и отправляет на ревью."""
+def _regenerate_from_model(entity_id: str) -> None:
+    """Пересобирает карточку по знаниям модели и отправляет на ревью."""
     from .db import connect
     from .telegram import notify_owner
 
@@ -362,12 +371,13 @@ def _regenerate_from_news(entity_id: str) -> None:
         if e is None:
             notify_owner(f"Сущности <code>{entity_id}</code> уже нет.")
             return
-        source_text = news_source_text(conn, e["name_es"])
+        # только для опознания: у испанских имён много однофамильцев
+        hint = news_source_text(conn, e["name_es"])
 
     try:
-        draft = generate_from_news(e["name_es"], source_text)
+        draft = generate_from_knowledge(e["name_es"], hint)
     except Exception as exc:  # noqa: BLE001 — одна неудача не роняет разбор
-        log.warning("Карточка %s по новостям не собралась: %s", entity_id, exc)
+        log.warning("Карточка %s не собралась: %s", entity_id, exc)
         notify_owner(f"<b>{e['name_es']}</b>: {exc}")
         return
 
@@ -376,7 +386,7 @@ def _regenerate_from_news(entity_id: str) -> None:
             "UPDATE entities SET card=%s, card_status='draft', "
             "card_updated_at=now() WHERE id=%s", (draft["card"], entity_id),
         )
-    log.info("Карточка %s собрана по новостям", entity_id)
+    log.info("Карточка %s собрана моделью", entity_id)
     send_for_review(dict(e), draft)
 
 
@@ -529,14 +539,16 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
         if cq and data.startswith("card:"):
             _, action, entity_id = data.split(":", 2)
 
-            if action == "news":
+            # «news» — данные кнопок, разосланных до переименования: сообщения
+            # уже лежат в чате, и ломать их нельзя
+            if action in ("gen", "news"):
                 # отвечаем сразу: сборка идёт в модель и занимает секунды,
                 # а callback_query столько не ждёт
-                answer_callback(cq["id"], "Собираю по новостям…")
+                answer_callback(cq["id"], "Собираю карточку…")
                 msg = cq.get("message") or {}
                 if msg:
                     edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
-                _regenerate_from_news(entity_id)
+                _regenerate_from_model(entity_id)
                 stats["generated"] = stats.get("generated", 0) + 1
                 continue
 

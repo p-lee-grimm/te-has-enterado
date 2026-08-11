@@ -133,9 +133,9 @@ class TestReviewButtons:
         return [b["callback_data"]
                 for row in got["markup"]["inline_keyboard"] for b in row]
 
-    def test_news_button_present_when_wiki_failed(self, monkeypatch):
+    def test_generate_button_present_when_wiki_failed(self, monkeypatch):
         data = self._markup(monkeypatch, ["в Википедии не нашлось статьи"])
-        assert "card:news:javier-negre" in data
+        assert "card:gen:javier-negre" in data
 
     def test_no_one_tap_approve_when_unverified(self, monkeypatch):
         """Утвердить непроверенное одним нажатием нельзя — это и есть защита."""
@@ -145,7 +145,7 @@ class TestReviewButtons:
     def test_clean_draft_can_be_approved(self, monkeypatch):
         data = self._markup(monkeypatch, [])
         assert "card:ok:javier-negre" in data
-        assert "card:news:javier-negre" in data
+        assert "card:gen:javier-negre" in data
 
 
 class TestOffsetAdvance:
@@ -177,3 +177,78 @@ class TestOffsetAdvance:
         cards.process_callbacks()
         assert saved["offset"] == "701", "подтверждаем приём сразу после получения"
         assert order[0] == "offset", "иначе долгий прогон вернётся к тому же нажатию"
+
+
+class TestCardFromModel:
+    """Карточка по знаниям модели: владелец принял риск и правит сам."""
+
+    @staticmethod
+    def _gen(monkeypatch, answer, hint=""):
+        import quepasa.cards as cards
+        seen = {}
+
+        def fake_llm(system, user, usage, retries=1):
+            seen["system"], seen["user"] = system, user
+            return {"card": answer}
+
+        monkeypatch.setattr(cards, "_llm_json", fake_llm)
+        monkeypatch.setattr(cards, "verify_against_source",
+                            lambda *a: ["сверка не должна вызываться"])
+        return cards.generate_from_knowledge("Javier Negre", hint), seen
+
+    def test_card_from_model_is_marked(self, monkeypatch):
+        draft, _ = self._gen(monkeypatch, "Журналист, основатель Estado de Alarma.")
+        assert draft["from_model"] is True
+        assert draft["problems"] == []
+
+    def test_no_source_verification(self, monkeypatch):
+        """Сверять не с чем: модель писала по памяти, а не по тексту."""
+        draft, _ = self._gen(monkeypatch, "Журналист.")
+        assert draft["problems"] == [], "сверка с источником здесь неприменима"
+
+    def test_news_go_in_as_identification_only(self, monkeypatch):
+        _, seen = self._gen(monkeypatch, "Журналист.", hint="[ABC] Negre y el Rey")
+        assert "не как источник" in seen["user"]
+
+    def test_works_without_any_news(self, monkeypatch):
+        """Новостей может не остаться — карточка всё равно должна собраться."""
+        draft, _ = self._gen(monkeypatch, "Журналист.")
+        assert draft["card"] == "Журналист."
+
+    def test_empty_answer_is_an_error_not_a_card(self, monkeypatch):
+        import pytest
+
+        from quepasa.cards import CardError
+        with pytest.raises(CardError):
+            self._gen(monkeypatch, "  ")
+
+    def test_too_long_card_still_flagged(self, monkeypatch):
+        """Форму проверяем всегда: предел длины — не про источник."""
+        draft, _ = self._gen(monkeypatch, "Ж" * 400)
+        assert draft["problems"], "перебор по длине должен ловиться"
+
+
+class TestModelCardReview:
+    @staticmethod
+    def _sent(monkeypatch, draft):
+        import quepasa.cards as cards
+        import quepasa.telegram as tg
+        got = {}
+        monkeypatch.setattr(tg, "notify_owner",
+                            lambda t, **k: got.update(text=t, markup=k.get("reply_markup")))
+        monkeypatch.setattr(cards, "news_urls_for", lambda e: [])
+        cards.send_for_review(
+            {"id": "javier-negre", "name_es": "Javier Negre", "type": "person"}, draft)
+        return got
+
+    def test_marked_as_model_written(self, monkeypatch):
+        got = self._sent(monkeypatch, {"card": "Журналист.", "problems": [],
+                                       "wiki_url": None, "from_model": True})
+        assert "модели" in got["text"]
+
+    def test_can_be_approved_in_one_tap(self, monkeypatch):
+        """Владелец сказал: правлю сам. Значит кнопка «Ок» должна быть."""
+        got = self._sent(monkeypatch, {"card": "Журналист.", "problems": [],
+                                       "wiki_url": None, "from_model": True})
+        data = [b["callback_data"] for r in got["markup"]["inline_keyboard"] for b in r]
+        assert "card:ok:javier-negre" in data
