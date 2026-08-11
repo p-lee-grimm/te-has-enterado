@@ -359,6 +359,30 @@ def _regenerate_from_url(entity_id: str, wiki_url: str) -> None:
     send_for_review(dict(e), draft)
 
 
+def _backfill_and_report(entity_id: str) -> None:
+    """Разносит утверждённую карточку по вышедшим постам и отчитывается."""
+    from .posts import backfill_entity_card
+    from .telegram import notify_owner
+
+    try:
+        res = backfill_entity_card(entity_id, dry_run=False)
+    except Exception as exc:  # noqa: BLE001 — утверждение уже состоялось
+        log.warning("Карточка %s: разнести по постам не вышло: %s", entity_id, exc)
+        notify_owner(f"Карточка <code>{entity_id}</code> утверждена, но в старые "
+                     f"посты не добавилась: {exc}")
+        return
+
+    if res.get("edited"):
+        parts = [f"Карточка <b>{entity_id}</b> добавлена в {res['edited']} "
+                 f"уже вышедших постов."]
+        if res.get("skipped_full"):
+            parts.append(f"Ещё {res['skipped_full']} пропущено — там уже "
+                         f"две карточки.")
+        if res.get("errors"):
+            parts.append(f"Не поправилось: {res['errors']}.")
+        notify_owner(" ".join(parts))
+
+
 def _regenerate_from_model(entity_id: str) -> None:
     """Пересобирает карточку по знаниям модели и отправляет на ревью."""
     from .db import connect
@@ -565,6 +589,8 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
             msg = cq.get("message") or {}
             if msg:
                 edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
+            if action == "ok":
+                _backfill_and_report(entity_id)
             continue
 
         # Ответ реплаем: либо ссылка на статью — это подтверждение личности,

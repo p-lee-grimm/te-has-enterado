@@ -1,0 +1,130 @@
+"""Утверждённая карточка догоняет уже вышедшие посты.
+
+Карточка утверждается позже, чем выходит пост: имя попадает в очередь,
+владелец разбирает её вечером, а пост с этим именем уже висит в канале без
+пояснения. Со звёздочкой у имени — она ставится тем же compose_html, и
+проверять надо именно её: карточка без метки в тексте незаметна.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from quepasa.posts import compose_html  # noqa: E402
+
+ART = [{"source_id": "abc", "source_name": "ABC", "lean": "right",
+        "owner_group": "vocento", "url": "https://abc.es/1",
+        "url_canonical": "https://abc.es/1", "title": "Puente y el Rey",
+        "type": "newspaper"}]
+CARD = {"id": "oscar-puente", "name_es": "Óscar Puente", "name_ru": "",
+        "card": "Министр транспорта Испании.", "card_status": "approved"}
+
+
+class TestRenderedPost:
+    """Что видит читатель после того, как карточку разнесли по постам."""
+
+    def _html(self, cards):
+        from quepasa.entities import render_cards_html
+        return compose_html(
+            "**Óscar Puente раскритиковал встречу короля с журналистом**",
+            ART, "политика",
+            cards_html=render_cards_html(cards), cards=cards,
+        )
+
+    def test_card_block_appears(self):
+        assert "Министр транспорта Испании." in self._html([CARD])
+
+    def test_asterisk_marks_the_name(self):
+        """Без звёздочки свёрнутый блок легко пропустить."""
+        assert "Óscar Puente*" in self._html([CARD])
+
+    def test_without_card_no_asterisk_and_no_block(self):
+        html = self._html([])
+        assert "Óscar Puente*" not in html
+        assert "blockquote" not in html
+
+    def test_asterisk_does_not_break_bold_header(self):
+        """Имя в конце жирного заголовка — худший случай для markdown."""
+        from quepasa.entities import render_cards_html
+        html = compose_html("**Решение принял Óscar Puente**", ART, "политика",
+                            cards_html=render_cards_html([CARD]), cards=[CARD])
+        assert html.count("<b>") == html.count("</b>")
+
+    def test_related_block_survives_reedit(self):
+        """Блок «Ранее по теме» не сохранялся и пропадал при каждой правке."""
+        html = compose_html("**Заголовок**", ART, "политика",
+                            related_md="Ранее по теме: [прошлый пост](https://t.me/x/1)")
+        assert "Ранее по теме" in html
+
+
+class TestBackfillSelection:
+    """Кого править, а кого не трогать."""
+
+    class Conn:
+        def __init__(self, ent, posts):
+            self.ent, self.posts, self.updates = ent, posts, []
+
+        def execute(self, sql, params=None):
+            flat = " ".join(sql.split())
+            if flat.startswith("UPDATE"):
+                self.updates.append((flat, params))
+                return type("R", (), {"fetchone": lambda s: None})()
+            if "FROM entities WHERE id = %s" in flat:
+                ent = self.ent
+                return type("R", (), {"fetchone": lambda s: ent})()
+            if "entity_mentions" in flat and "JOIN posts" in flat:
+                posts = self.posts
+                return type("R", (), {"fetchall": lambda s: posts})()
+            return type("R", (), {"fetchall": lambda s: [], "fetchone": lambda s: None})()
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _run(self, monkeypatch, ent, posts):
+        import quepasa.posts as posts_mod
+        conn = self.Conn(ent, posts)
+        # connect импортируется в posts на уровне модуля — подменяем там
+        monkeypatch.setattr(posts_mod, "connect", lambda *a, **k: conn)
+        monkeypatch.setattr(posts_mod, "cluster_articles", lambda c, cid: ART)
+        return posts_mod.backfill_entity_card("oscar-puente", dry_run=True), conn
+
+    def _post(self, pid=1, entity_ids=None):
+        return {"id": pid, "cluster_id": 10, "message_id": 100 + pid,
+                "header_md": "**Óscar Puente и король**", "category": "политика",
+                "one_sided": False, "significance": "", "related_md": "",
+                "entity_ids": entity_ids or []}
+
+    def test_unapproved_card_is_not_distributed(self, monkeypatch):
+        """Черновик в канал не уходит — это и есть смысл утверждения."""
+        ent = {**CARD, "card_status": "draft"}
+        res, _ = self._run(monkeypatch, ent, [self._post()])
+        assert res["status"] == "skip"
+        assert res["edited"] == 0
+
+    def test_empty_card_is_not_distributed(self, monkeypatch):
+        ent = {**CARD, "card": "   "}
+        res, _ = self._run(monkeypatch, ent, [self._post()])
+        assert res["status"] == "skip"
+
+    def test_approved_card_reaches_the_post(self, monkeypatch):
+        res, _ = self._run(monkeypatch, CARD, [self._post()])
+        assert res["edited"] == 1
+
+    def test_post_with_two_cards_is_left_alone(self, monkeypatch):
+        """Три карточки превращают пост в справочник."""
+        res, _ = self._run(monkeypatch, CARD, [self._post(entity_ids=["a", "b"])])
+        assert res["edited"] == 0 and res["skipped_full"] == 1
+
+    def test_cap_reported_not_silent(self, monkeypatch, caplog):
+        """Молчаливое усечение читается как «обошли всё»."""
+        import logging
+        posts = [self._post(pid=i) for i in range(25)]
+        with caplog.at_level(logging.INFO):
+            res, _ = self._run(monkeypatch, CARD, posts)
+        assert res["checked"] == 25
+        assert res["edited"] == 20, "потолок из конфига"
+        assert any("правим первые" in r.getMessage() for r in caplog.records), \
+            "о пропущенных надо сказать вслух"

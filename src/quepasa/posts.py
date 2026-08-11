@@ -490,13 +490,14 @@ def publish(cluster_id: int, dry_run: bool = True, silent: bool = True,
     # цитаты никак не считается, а тап — считается (§10).
     measure = is_measure_day(datetime.now(ZoneInfo(
         get_settings().require("render.timezone"))))
+    related_md = render_link_md(related) if related else ""
     text = compose_html(
         post["header_md"], articles, post["category"],
         one_sided=bool(post.get("one_sided")),
         significance=post.get("significance") or "",
         cards_html="" if measure else render_cards_html(cards or []),
         cards=cards or [],
-        related_md=render_link_md(related) if related else "",
+        related_md=related_md,
     )
     if dry_run:
         log.info("DRY-RUN, пост не отправлен:\n%s", text)
@@ -530,11 +531,11 @@ def publish(cluster_id: int, dry_run: bool = True, silent: bool = True,
             UPDATE posts SET status = 'published', message_id = %s,
                    published_at = now(), posted_source_ids = %s,
                    with_sound = %s, n_articles_at_publish = %s,
-                   reply_to_message_id = %s
+                   reply_to_message_id = %s, related_md = %s
             WHERE id = %s
             """,
             (message_id, json.dumps(source_ids), not silent, len(articles),
-             reply_to, post["id"]),
+             reply_to, related_md, post["id"]),
         )
         # цепочка ведётся по кластеру: следующий пост ответит на этот
         conn.execute(
@@ -648,6 +649,7 @@ def sync_post(cluster_id: int, dry_run: bool = True) -> dict[str, Any]:
         significance=post.get("significance") or "",
         cards_html=render_cards_html([dict(r) for r in saved]),
         cards=[dict(r) for r in saved],
+        related_md=post.get("related_md") or "",
     )
     if dry_run:
         log.info("DRY-RUN: сюжет %s дополнился (%s)%s — правка не отправлена",
@@ -679,6 +681,118 @@ def sync_post(cluster_id: int, dry_run: bool = True) -> dict[str, Any]:
              ", снята пометка об одном лагере" if one_sided_changed else "")
     return {"status": "edited", "cluster_id": cluster_id, "added": added,
             "one_sided_lifted": one_sided_changed}
+
+
+def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]:
+    """Добавляет утверждённую карточку в уже вышедшие посты с этим именем.
+
+    Карточка утверждается позже, чем выходит пост: имя попадает в очередь,
+    владелец разбирает её вечером, а пост с этим именем уже висит в канале
+    без пояснения. Здесь эти посты дособираются — вместе со звёздочкой у
+    имени, потому что она ставится тем же compose_html.
+
+    Правка сообщения уведомление не шлёт, так что читателя это не беспокоит.
+    """
+    from datetime import datetime, timezone
+
+    from .config import env, get_settings
+    from .entities import render_cards_html
+
+    s = get_settings()
+    window = float(s.get_path("entities.backfill_window_hours", 168))
+    max_posts = int(s.get_path("entities.backfill_max_posts", 20))
+    max_cards = int(s.get_path("entities.max_cards_per_post", 2))
+
+    stats: dict[str, Any] = {"entity_id": entity_id, "checked": 0, "edited": 0,
+                             "skipped_full": 0, "errors": 0, "posts": []}
+
+    with connect() as conn:
+        ent = conn.execute(
+            "SELECT * FROM entities WHERE id = %s", (entity_id,)
+        ).fetchone()
+        if ent is None or ent["card_status"] != "approved" or not (ent["card"] or "").strip():
+            return {**stats, "status": "skip", "reason": "карточка не утверждена"}
+
+        # посты, где имя встретилось, но пояснения не было
+        rows = conn.execute(
+            """
+            SELECT DISTINCT p.*
+            FROM entity_mentions m JOIN posts p ON p.id = m.post_id
+            WHERE m.entity_id = %s AND NOT m.shown
+              AND p.status = 'published' AND p.message_id IS NOT NULL
+              AND p.published_at >= now() - make_interval(hours => %s)
+            ORDER BY p.published_at DESC
+            """,
+            (entity_id, int(window)),
+        ).fetchall()
+
+    stats["checked"] = len(rows)
+    if len(rows) > max_posts:
+        # молчаливое усечение читается как «обошли всё», поэтому говорим вслух
+        log.info("Карточка %s: постов %s, правим первые %s",
+                 entity_id, len(rows), max_posts)
+        rows = rows[:max_posts]
+
+    channel = env("TELEGRAM_CHANNEL_ID", required=True) if not dry_run else ""
+
+    for post in rows:
+        current = list(post.get("entity_ids") or [])
+        if len(current) >= max_cards:
+            # больше двух карточек превращают пост в справочник
+            stats["skipped_full"] += 1
+            continue
+
+        with connect() as conn:
+            articles = cluster_articles(conn, post["cluster_id"])
+            saved = conn.execute(
+                "SELECT * FROM entities WHERE id = ANY(%s)",
+                (current + [entity_id],),
+            ).fetchall()
+        cards = [dict(r) for r in saved]
+
+        text = compose_html(
+            post["header_md"], articles, post["category"],
+            one_sided=bool(post.get("one_sided")),
+            significance=post.get("significance") or "",
+            cards_html=render_cards_html(cards), cards=cards,
+            related_md=post.get("related_md") or "",
+        )
+
+        if dry_run:
+            stats["posts"].append({"post_id": post["id"], "html": text})
+            stats["edited"] += 1
+            continue
+
+        try:
+            edit_message_text(channel, int(post["message_id"]), text)
+        except Exception as exc:  # noqa: BLE001 — один пост не роняет остальные
+            log.warning("Карточка %s: пост %s не поправился: %s",
+                        entity_id, post["id"], exc)
+            stats["errors"] += 1
+            continue
+
+        with connect() as conn:
+            conn.execute(
+                "UPDATE posts SET entity_ids = %s, edited_at = now(), "
+                "edit_count = edit_count + 1 WHERE id = %s",
+                (json.dumps(current + [entity_id]), post["id"]),
+            )
+            conn.execute(
+                "UPDATE entity_mentions SET shown = TRUE "
+                "WHERE post_id = %s AND entity_id = %s", (post["id"], entity_id),
+            )
+            conn.execute(
+                "UPDATE entities SET last_explained_at = now() WHERE id = %s",
+                (entity_id,),
+            )
+        stats["edited"] += 1
+        stats["posts"].append({"post_id": post["id"], "message_id": post["message_id"]})
+
+    if stats["edited"] or stats["checked"]:
+        log.info("Карточка %s добавлена в %s постов из %s (полных: %s, ошибок: %s)",
+                 entity_id, stats["edited"], stats["checked"],
+                 stats["skipped_full"], stats["errors"])
+    return {**stats, "status": "ok"}
 
 
 def sync_all(dry_run: bool = True) -> dict[str, Any]:
