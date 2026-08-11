@@ -20,7 +20,8 @@ ART = [{"source_id": "abc", "source_name": "ABC", "lean": "right",
         "url_canonical": "https://abc.es/1", "title": "Puente y el Rey",
         "type": "newspaper"}]
 CARD = {"id": "oscar-puente", "name_es": "Óscar Puente", "name_ru": "",
-        "card": "Министр транспорта Испании.", "card_status": "approved"}
+        "card": "Министр транспорта Испании.", "card_status": "approved",
+        "never_explain": False}
 
 
 class TestRenderedPost:
@@ -144,3 +145,9 @@ class TestBackfillSelection:
         """Главный случай: сущности не было, когда пост выходил."""
         res, _ = self._run(monkeypatch, CARD, [self._post()])
         assert res["edited"] == 1, "запись в entity_mentions тут отсутствует"
+
+    def test_never_explain_entity_is_not_distributed(self, monkeypatch):
+        """Имена, которые аудитория заведомо знает, объяснять не надо."""
+        ent = {**CARD, "never_explain": True}
+        res, _ = self._run(monkeypatch, ent, [self._post()])
+        assert res["status"] == "skip" and res["edited"] == 0

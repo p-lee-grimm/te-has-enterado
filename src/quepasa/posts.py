@@ -712,6 +712,9 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
         ).fetchone()
         if ent is None or ent["card_status"] != "approved" or not (ent["card"] or "").strip():
             return {**stats, "status": "skip", "reason": "карточка не утверждена"}
+        if ent["never_explain"]:
+            # имена, которые аудитория заведомо знает, объяснять не надо
+            return {**stats, "status": "skip", "reason": "помечено never_explain"}
 
         # Ищем по тексту поста, а не по entity_mentions: сущности ещё не было,
         # когда пост выходил, поэтому упоминание в ту таблицу не попало —

@@ -131,6 +131,53 @@ def cmd_add(args) -> int:
     return 0
 
 
+def cmd_backfill(args) -> int:
+    """Разносит утверждённые карточки по уже вышедшим постам.
+
+    Порядок — от редких имён к частым: карточек на пост не больше двух, и
+    занимать их должно то, чего читатель скорее не знает.
+    """
+    from quepasa.posts import backfill_entity_card
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name_es, mentions_count FROM entities
+            WHERE card_status = 'approved' AND NOT never_explain
+              AND btrim(card) <> ''
+              AND (%s IS NULL OR id = %s)
+            ORDER BY mentions_count ASC, id
+            """,
+            (args.id, args.id),
+        ).fetchall()
+
+    if not rows:
+        console.print("[yellow]Нечего разносить: утверждённых карточек нет[/]")
+        return 1
+
+    total_edited = total_checked = 0
+    for r in rows:
+        res = backfill_entity_card(r["id"], dry_run=not args.commit)
+        total_checked += res.get("checked", 0)
+        total_edited += res.get("edited", 0)
+        if res.get("checked"):
+            console.print(
+                f"  [bold]{r['name_es']}[/] — постов {res['checked']}, "
+                f"правок {res['edited']}"
+                + (f", пропущено (две карточки уже есть): {res['skipped_full']}"
+                   if res.get("skipped_full") else "")
+            )
+
+    console.print(
+        f"\nСущностей просмотрено: {len(rows)}. "
+        f"Подходящих постов: {total_checked}. "
+        f"{'Исправлено' if args.commit else 'Будет исправлено'}: {total_edited}."
+    )
+    if not args.commit:
+        console.print("[dim]Это сухой прогон. Чтобы применить — --commit[/]")
+    return 0
+
+
 def cmd_generate(args) -> int:
     """Черновик карточки из Википедии -> в чат ревью с кнопками."""
     from quepasa.cards import CardError, generate, send_for_review
@@ -292,6 +339,12 @@ def main() -> int:
 
     p = ent.add_parser("callbacks"); p.add_argument("--wait", type=int, default=0)
     p.set_defaults(fn=cmd_callbacks)
+
+    p = ent.add_parser("backfill",
+                       help="разнести утверждённые карточки по вышедшим постам")
+    p.add_argument("id", nargs="?", help="одна сущность; без аргумента — все")
+    p.add_argument("--commit", action="store_true")
+    p.set_defaults(fn=cmd_backfill)
 
     p = ent.add_parser("alias"); p.add_argument("id"); p.add_argument("alias", nargs="+")
     p.set_defaults(fn=cmd_alias)
