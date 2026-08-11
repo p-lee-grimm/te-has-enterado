@@ -214,6 +214,10 @@ docker run -d --name quepasa-pg --restart unless-stopped \
   pgvector/pgvector:pg16
 ```
 
+Расписание живёт на сервере, а не в GitHub Actions: два планировщика на один
+канал дали бы дубли постов и гонку за суточную квоту. В Actions остались
+только тесты.
+
 Расписание — три скрипта в `bin/`:
 
 ```
