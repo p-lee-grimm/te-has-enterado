@@ -19,8 +19,8 @@ from .config import get_settings
 def should_run_now(now: datetime | None = None) -> tuple[bool, str]:
     s = get_settings()
     tz = ZoneInfo(s.require("render.timezone"))
-    hour = int(s.require("publish.run_hour_local"))
-    minute = int(s.require("publish.run_minute_local"))
+    hour = int(s.get_path("digest.run_hour_local", s.require("publish.run_hour_local")))
+    minute = int(s.get_path("digest.run_minute_local", s.require("publish.run_minute_local")))
     tolerance = int(s.require("publish.schedule_tolerance_minutes"))
 
     now = now.astimezone(tz) if now else datetime.now(tz)

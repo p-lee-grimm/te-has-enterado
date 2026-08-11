@@ -7,18 +7,17 @@ from typing import Any
 
 from ..config import get_settings
 from ..db import articles_without_embedding, connect, set_embedding
-from ..embed import build_input, embed_texts
+from ..embed import build_input, embed_texts, plan_batches
 
 log = logging.getLogger(__name__)
 
 
 def run(dry_run: bool = True, limit: int = 5000) -> dict[str, Any]:
     s = get_settings()
-    batch_size = int(s.require("embed.batch_size"))
-
     with connect() as conn:
         pending = articles_without_embedding(conn, limit)
 
+    model_tag = f"{s.require('embed.provider')}/{s.require('embed.model')}"
     stats = {
         "pending": len(pending),
         "embedded": 0,
@@ -37,17 +36,23 @@ def run(dry_run: bool = True, limit: int = 5000) -> dict[str, Any]:
         )
         return stats
 
-    for start in range(0, len(pending), batch_size):
-        chunk = pending[start : start + batch_size]
-        inputs = [build_input(r["title"], r["text"]) for r in chunk]
-        vectors = embed_texts(inputs)
+    all_inputs = [build_input(r["title"], r["text"]) for r in pending]
+    batches = plan_batches(all_inputs)
+    log.info("Пачек: %s (в среднем по %.0f статей)",
+             len(batches), len(pending) / max(1, len(batches)))
 
+    for n, idx in enumerate(batches, 1):
+        vectors = embed_texts([all_inputs[i] for i in idx])
+
+        # пишем сразу после каждой пачки: если упрёмся в лимит на середине,
+        # посчитанное не пропадёт и следующий запуск продолжит с этого места
         with connect() as conn:
-            for row, vec in zip(chunk, vectors):
-                set_embedding(conn, row["id"], vec)
+            for i, vec in zip(idx, vectors):
+                set_embedding(conn, pending[i]["id"], vec, model_tag)
 
-        stats["embedded"] += len(chunk)
+        stats["embedded"] += len(idx)
         stats["batches"] += 1
-        log.info("Эмбеддинги: %s/%s", stats["embedded"], len(pending))
+        log.info("Эмбеддинги: %s/%s (пачка %s из %s)",
+                 stats["embedded"], len(pending), n, len(batches))
 
     return stats

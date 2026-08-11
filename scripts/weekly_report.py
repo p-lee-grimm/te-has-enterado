@@ -83,9 +83,35 @@ def collect(days: int = DAYS) -> dict:
             (days,),
         ).fetchone()
 
+        entities = conn.execute(
+            """
+            SELECT count(*) FILTER (WHERE card_status = 'draft')  AS drafts,
+                   count(*) FILTER (WHERE card_status = 'stale')  AS stale,
+                   count(*) FILTER (WHERE card_status = 'approved') AS approved
+            FROM entities
+            """
+        ).fetchone()
+        unresolved = conn.execute(
+            """
+            SELECT surface, count FROM entity_unresolved
+            WHERE last_seen >= now() - make_interval(days => %s)
+            ORDER BY count DESC LIMIT 10
+            """,
+            (days,),
+        ).fetchall()
+        taps = conn.execute(
+            """
+            SELECT count(*) AS total, count(DISTINCT user_id) AS people,
+                   count(DISTINCT entity_id) AS entities
+            FROM context_taps WHERE tapped_at >= now() - make_interval(days => %s)
+            """,
+            (days,),
+        ).fetchone()
+
     return {
         "by_day": by_day, "feeds": feeds, "top_sources": top_sources,
-        "runs": runs, "digests": digests,
+        "runs": runs, "digests": digests, "entities": entities,
+        "unresolved": unresolved, "taps": taps,
     }
 
 
@@ -134,6 +160,24 @@ def render_report(data: dict, subs: int | None) -> str:
 
     if float(r["cost"]) > 10:
         lines.append("  ⚠️ на порядок выше ожидаемого — проверь, не зациклилось ли что-то")
+
+    e = data["entities"]
+    lines += ["", "<b>Контекстный слой</b>",
+              f"  карточек утверждено: {e['approved']}, ждут ревью: {e['drafts']}, "
+              f"устарели: {e['stale']}"]
+
+    if data["unresolved"]:
+        lines += ["", "<b>Очередь неразрешённых сущностей</b>"]
+        for r in data["unresolved"]:
+            lines.append(f"  {r['surface']} ×{r['count']}")
+        lines.append("  <i>Завести: python manage.py entity add …</i>")
+
+    t = data["taps"]
+    if t and int(t["total"]) > 0:
+        lines += ["", "<b>Замерный режим</b>",
+                  f"  тапов: {t['total']}, людей: {t['people']}, "
+                  f"сущностей: {t['entities']}",
+                  "  <i>Пересланный пост кнопок не сохраняет — охват занижен.</i>"]
 
     if subs is not None:
         lines += ["", f"<b>Подписчиков:</b> {subs}"]

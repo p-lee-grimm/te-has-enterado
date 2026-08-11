@@ -11,11 +11,13 @@ from ..llm import LLMError, LLMUsage, summarize_call
 log = logging.getLogger(__name__)
 
 LEAN_RU = {
+    "far-left": "крайне левое",
     "left": "левое",
     "center-left": "левоцентристское",
     "center": "центристское",
     "center-right": "правоцентристское",
     "right": "правое",
+    "far-right": "крайне правое",
 }
 
 TYPE_RU = {"press": "издание", "agency": "агентство", "official": "официальный источник"}

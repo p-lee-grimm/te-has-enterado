@@ -1,0 +1,46 @@
+name: Публикация постов
+
+on:
+  # Каждые 30 минут. Пауза между постами держится проверкой времени
+  # (autopost.min_gap_minutes), а не простоем раннера: простой — это
+  # оплаченные минуты. Окно 09:00–21:00 по Мадриду проверяется в коде,
+  # поэтому cron гоняем шире и лишние прогоны отсекаются мгновенно.
+  schedule:
+    - cron: "0,30 6-20 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Только показать, что опубликовалось бы"
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          REVIEW_CHAT_ID: ${{ secrets.REVIEW_CHAT_ID }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+        run: |
+          # сначала разбираем нажатия: кнопка, нажатая между прогонами,
+          # иначе висит до следующего ручного запуска
+          python run.py --process-callbacks
+          python run.py --autopost ${{ inputs.dry_run && '--dry-run' || '--commit' }}
+          # дополняем уже опубликованные посты новыми изданиями
+          python run.py --sync-posts --commit
+          # сверяем факты в свежих постах с текущими источниками
+          python run.py --check-facts --commit

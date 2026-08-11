@@ -126,7 +126,10 @@ def run(items: list[dict[str, Any]], messages: list[str], gate_report: dict | No
         stats["status"] = "dry-run"
         return stats
 
-    owner = env("TELEGRAM_OWNER_CHAT_ID", required=True)
+    from ..telegram import review_chat_id
+    owner = review_chat_id()
+    if not owner:
+        raise RuntimeError("не задан REVIEW_CHAT_ID (или TELEGRAM_OWNER_CHAT_ID)")
 
     with connect() as conn:
         digest_id = save_digest(

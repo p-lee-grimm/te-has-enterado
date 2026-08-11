@@ -134,6 +134,19 @@ def run(dry_run: bool = True, limit: int = 5000) -> dict[str, Any]:
     }
 
     with connect() as conn:
+        from ..db import embedding_models
+
+        models = embedding_models(conn)
+        if len(models) > 1:
+            # молча кластеризовать смесь нельзя: косинус между векторами разных
+            # моделей бессмыслен, и поломка будет невидимой
+            listing = ", ".join(f"{m['model']} ({m['n']})" for m in models)
+            raise RuntimeError(
+                f"В базе векторы разных моделей: {listing}. "
+                "Пересчитай эмбеддинги одной моделью: python run.py --reembed --commit"
+            )
+        stats["embed_model"] = models[0]["model"] if models else None
+
         pending = _unclustered(conn, limit)
         stats["pending"] = len(pending)
 

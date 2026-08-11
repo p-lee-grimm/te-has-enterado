@@ -72,6 +72,11 @@ class Source:
     weight: float
     lang: str
     status: str  # active | disabled
+    # владелец: три газеты одного холдинга = одно подтверждение, а не три
+    owner_group: str = ""
+    # издания с антибот-защитой могут стабильно отдавать 403 на полный текст.
+    # Тогда качать его — впустую жечь запросы: работаем с анонсом из фида (§3.2).
+    body_fetch: bool = True
 
     @property
     def is_active(self) -> bool:
@@ -108,6 +113,8 @@ def load_sources(path: str | None = None, include_disabled: bool = False) -> lis
             weight=float(item.get("weight", 1.0)),
             lang=item.get("lang", "es"),
             status=status,
+            body_fetch=bool(item.get("body_fetch", True)),
+            owner_group=item.get("owner_group") or item["id"],
         )
         if src.is_active or include_disabled:
             out.append(src)

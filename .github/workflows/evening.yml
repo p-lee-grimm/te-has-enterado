@@ -1,0 +1,37 @@
+name: Вечерний пост
+
+on:
+  # 21:30 по Мадриду. GitHub понимает только UTC, Испания переходит на летнее
+  # время, поэтому cron срабатывает в оба часа, а лишний отсекает
+  # run.py --check-schedule по таймзоне Europe/Madrid.
+  schedule:
+    - cron: "30 19 * * *"
+    - cron: "30 20 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: evening
+
+jobs:
+  evening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Проверить, наше ли это время
+        id: sched
+        if: github.event_name == 'schedule'
+        run: |
+          if python run.py --check-schedule; then echo "run=yes" >> "$GITHUB_OUTPUT"
+          else echo "run=no" >> "$GITHUB_OUTPUT"; fi
+      - if: github.event_name != 'schedule' || steps.sched.outputs.run == 'yes'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          REVIEW_CHAT_ID: ${{ secrets.REVIEW_CHAT_ID }}
+        run: python run.py --digest-post --commit

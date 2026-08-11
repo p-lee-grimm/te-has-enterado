@@ -198,7 +198,9 @@ async def _ingest_source(
     source["_etag"] = res.etag
     source["_last_modified"] = res.last_modified
 
-    if get_settings().get_path("normalize.body_fetch_enabled", True):
+    if get_settings().get_path("normalize.body_fetch_enabled", True) and source.get(
+        "body_fetch", True
+    ):
         await asyncio.gather(
             *[_fetch_body(client, robots, limiter, a, stats) for a in articles]
         )

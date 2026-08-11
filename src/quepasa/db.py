@@ -83,14 +83,18 @@ def sync_sources(conn: psycopg.Connection) -> int:
     for s in sources:
         conn.execute(
             """
-            INSERT INTO sources (id, name, feed_url, type, lean, weight, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO sources
+                (id, name, feed_url, type, lean, weight, status, body_fetch, owner_group)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, feed_url = EXCLUDED.feed_url,
                 type = EXCLUDED.type, lean = EXCLUDED.lean,
-                weight = EXCLUDED.weight, status = EXCLUDED.status
+                weight = EXCLUDED.weight, status = EXCLUDED.status,
+                body_fetch = EXCLUDED.body_fetch,
+                owner_group = EXCLUDED.owner_group
             """,
-            (s.id, s.name, s.feed_url, s.type, s.lean, s.weight, s.status),
+            (s.id, s.name, s.feed_url, s.type, s.lean, s.weight, s.status,
+             s.body_fetch, s.owner_group),
         )
     return len(sources)
 
@@ -162,8 +166,41 @@ def articles_without_embedding(conn: psycopg.Connection, limit: int) -> list[dic
     ).fetchall()
 
 
-def set_embedding(conn: psycopg.Connection, article_id: int, vec: list[float]) -> None:
-    conn.execute("UPDATE articles SET embedding = %s WHERE id = %s", (vec, article_id))
+def set_embedding(
+    conn: psycopg.Connection, article_id: int, vec: list[float], model: str
+) -> None:
+    conn.execute(
+        "UPDATE articles SET embedding = %s, embed_model = %s WHERE id = %s",
+        (vec, model, article_id),
+    )
+
+
+def embedding_models(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    """Какими моделями посчитаны векторы в базе. Больше одной — беда."""
+    return conn.execute(
+        """
+        SELECT COALESCE(embed_model, '(не указана)') AS model, count(*) AS n
+        FROM articles WHERE embedding IS NOT NULL
+        GROUP BY 1 ORDER BY n DESC
+        """
+    ).fetchall()
+
+
+def drop_embeddings(conn: psycopg.Connection, keep_model: str | None = None) -> int:
+    """Сбрасывает векторы (и привязку к сюжетам) — при смене модели."""
+    row = conn.execute(
+        """
+        WITH cleared AS (
+            UPDATE articles SET embedding = NULL, embed_model = NULL, cluster_id = NULL
+            WHERE embedding IS NOT NULL
+              AND (%s::text IS NULL OR embed_model IS DISTINCT FROM %s)
+            RETURNING 1
+        )
+        SELECT count(*) AS n FROM cleared
+        """,
+        (keep_model, keep_model),
+    ).fetchone()
+    return row["n"]
 
 
 def purge_expired_bodies(conn: psycopg.Connection) -> int:
@@ -178,6 +215,29 @@ def purge_expired_bodies(conn: psycopg.Connection) -> int:
         )
         SELECT count(*) AS n FROM purged
         """
+    ).fetchone()
+    return row["n"]
+
+
+def purge_old_embeddings(conn: psycopg.Connection, keep_days: int) -> int:
+    """Затирает векторы у статей старше keep_days.
+
+    Вектор нужен, только пока статья участвует в кластеризации (окно 48 ч) и
+    в калибровке порога (несколько дней корпуса). Дальше это 4 КБ на строку,
+    которые никто не читает, — а именно они и составляют почти весь вес базы.
+    Сама статья остаётся: URL, заголовок и наш пересказ храним постоянно (§3.2).
+    """
+    row = conn.execute(
+        """
+        WITH purged AS (
+            UPDATE articles SET embedding = NULL
+            WHERE embedding IS NOT NULL
+              AND published_at < now() - make_interval(days => %s)
+            RETURNING 1
+        )
+        SELECT count(*) AS n FROM purged
+        """,
+        (keep_days,),
     ).fetchone()
     return row["n"]
 

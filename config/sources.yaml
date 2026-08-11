@@ -7,6 +7,7 @@ sources:
   feed_url: https://www.20minutos.es/rss/
   type: press
   lean: center-left
+  owner_group: Henneo
   weight: 1.0
   lang: es
   status: active
@@ -19,6 +20,7 @@ sources:
   feed_url: https://www.abc.es/rss/2.0/portada/
   type: press
   lean: right
+  owner_group: Vocento
   weight: 1.0
   lang: es
   status: active
@@ -31,6 +33,7 @@ sources:
   feed_url: https://www.boe.es/rss/boe.php
   type: official
   lean: center
+  owner_group: Estado (BOE)
   weight: 1.0
   lang: es
   status: active
@@ -43,6 +46,7 @@ sources:
   feed_url: https://rss.elconfidencial.com/espana/
   type: press
   lean: center-right
+  owner_group: Titania
   weight: 1.0
   lang: es
   status: active
@@ -55,6 +59,7 @@ sources:
   feed_url: https://www.eldiario.es/rss/
   type: press
   lean: left
+  owner_group: elDiario.es
   weight: 1.0
   lang: es
   status: active
@@ -67,6 +72,7 @@ sources:
   feed_url: https://www.elespanol.com/rss/
   type: press
   lean: center-right
+  owner_group: El Español
   weight: 1.0
   lang: es
   status: active
@@ -79,6 +85,7 @@ sources:
   feed_url: https://www.elmundo.es/rss/portada.xml
   type: press
   lean: center-right
+  owner_group: Unidad Editorial
   weight: 1.0
   lang: es
   status: active
@@ -91,9 +98,14 @@ sources:
   feed_url: https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada
   type: press
   lean: center-left
+  owner_group: PRISA
   weight: 1.0
   lang: es
   status: active
+  # Стабильно отдаёт 403 на загрузку страницы (антибот). Полный текст не берём,
+  # работаем с анонсом из фида — он у El País развёрнутый, ~1400 символов.
+  # Это экономит ~130 бесполезных запросов за прогон.
+  body_fetch: false
   _checked:
     verdict: OK
     entries_24h: 100
@@ -103,6 +115,7 @@ sources:
   feed_url: https://www.elperiodico.com/es/rss/politica/rss.xml
   type: press
   lean: center-left
+  owner_group: Prensa Ibérica
   weight: 1.0
   lang: es
   status: active
@@ -115,6 +128,7 @@ sources:
   feed_url: https://www.europapress.es/rss/rss.aspx
   type: agency
   lean: center
+  owner_group: Europa Press
   weight: 1.0
   lang: es
   status: active
@@ -127,6 +141,7 @@ sources:
   feed_url: https://www.infolibre.es/rss/
   type: press
   lean: left
+  owner_group: infoLibre
   weight: 1.0
   lang: es
   status: active
@@ -139,6 +154,7 @@ sources:
   feed_url: https://www.larazon.es/rss/espana.xml
   type: press
   lean: right
+  owner_group: Grupo Planeta
   weight: 1.0
   lang: es
   status: active
@@ -151,6 +167,7 @@ sources:
   feed_url: https://www.lasexta.com/rss/348128.xml
   type: press
   lean: center-left
+  owner_group: Atresmedia
   weight: 1.0
   lang: es
   status: active
@@ -163,6 +180,7 @@ sources:
   feed_url: https://www.lavanguardia.com/rss/home.xml
   type: press
   lean: center
+  owner_group: Grupo Godó
   weight: 1.0
   lang: es
   status: active
@@ -175,6 +193,7 @@ sources:
   feed_url: https://www.lamoncloa.gob.es/Paginas/rss.aspx?tipo=42
   type: official
   lean: center
+  owner_group: Gobierno de España
   weight: 1.0
   lang: es
   status: active
@@ -187,6 +206,7 @@ sources:
   feed_url: https://www.lamoncloa.gob.es/Paginas/rss.aspx?tipo=15
   type: official
   lean: center
+  owner_group: Gobierno de España
   weight: 1.0
   lang: es
   status: active
@@ -199,6 +219,7 @@ sources:
   feed_url: https://okdiario.com/feed
   type: press
   lean: right
+  owner_group: OKdiario
   weight: 1.0
   lang: es
   status: active
@@ -211,6 +232,7 @@ sources:
   feed_url: ''
   type: press
   lean: center-left
+  owner_group: PRISA
   weight: 1.0
   lang: es
   status: disabled
@@ -220,6 +242,7 @@ sources:
   feed_url: ''
   type: agency
   lean: center
+  owner_group: Agencia EFE
   weight: 1.0
   lang: es
   status: disabled
@@ -229,6 +252,7 @@ sources:
   feed_url: ''
   type: press
   lean: left
+  owner_group: Mediapubli
   weight: 1.0
   lang: es
   status: disabled
@@ -238,6 +262,7 @@ sources:
   feed_url: ''
   type: press
   lean: center
+  owner_group: RTVE
   weight: 1.0
   lang: es
   status: disabled

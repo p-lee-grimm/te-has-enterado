@@ -287,19 +287,20 @@ class TestSchedule:
 
     def test_summer_utc_hour(self):
         from quepasa.schedule import should_run_now
-        # CEST (UTC+2): 19:30 по Мадриду == 17:30 UTC
-        assert should_run_now(self._at("2026-08-11T17:30:00"))[0]
-        assert not should_run_now(self._at("2026-08-11T18:30:00"))[0]
+        # Вечерний пост в 21:30 по Мадриду; CEST (UTC+2) => 19:30 UTC
+        assert should_run_now(self._at("2026-08-11T19:30:00"))[0]
+        assert not should_run_now(self._at("2026-08-11T20:30:00"))[0]
 
     def test_winter_utc_hour(self):
         from quepasa.schedule import should_run_now
-        # CET (UTC+1): 19:30 по Мадриду == 18:30 UTC
-        assert should_run_now(self._at("2026-01-15T18:30:00"))[0]
-        assert not should_run_now(self._at("2026-01-15T17:30:00"))[0]
+        # CET (UTC+1) => 20:30 UTC. Хардкодить UTC-час нельзя: полгода
+        # выпуск выходил бы на час не вовремя.
+        assert should_run_now(self._at("2026-01-15T20:30:00"))[0]
+        assert not should_run_now(self._at("2026-01-15T19:30:00"))[0]
 
     def test_late_start_within_tolerance(self):
         from quepasa.schedule import should_run_now
-        assert should_run_now(self._at("2026-08-11T17:45:00"))[0]
+        assert should_run_now(self._at("2026-08-11T19:45:00"))[0]
 
     def test_way_off_rejected(self):
         from quepasa.schedule import should_run_now

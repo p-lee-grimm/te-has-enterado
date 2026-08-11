@@ -57,7 +57,8 @@ def pick_links(articles: list[dict[str, Any]], limit: int) -> list[dict[str, Any
         buckets.setdefault(art["lean"], []).append(art)
 
     # чередуем края спектра: left, right, center-left, center-right, center
-    order = ["left", "right", "center-left", "center-right", "center"]
+    order = ["far-left", "far-right", "left", "right",
+             "center-left", "center-right", "center"]
     picked: list[dict[str, Any]] = []
     while len(picked) < limit and any(buckets.get(l) for l in order):
         for lean in order:

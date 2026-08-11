@@ -53,10 +53,14 @@ class LLMUsage:
     tokens_in: int = 0
     tokens_out: int = 0
     calls: int = 0
+    # стоимость, которую сообщил сам провайдер (CLI её знает точно)
+    reported_cost_usd: float = 0.0
     errors: list[str] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
+        if self.reported_cost_usd:
+            return self.reported_cost_usd
         s = get_settings()
         return (
             self.tokens_in / 1_000_000 * float(s.require("summarize.price_per_mtok_in"))
@@ -119,7 +123,78 @@ def call_anthropic(system: str, user: str, usage: LLMUsage) -> str:
     return "".join(parts)
 
 
-_PROVIDERS = {"anthropic": call_anthropic}
+def call_claude_cli(system: str, user: str, usage: LLMUsage) -> str:
+    """Вызов через `claude -p` — на подписке, без отдельного API-ключа.
+
+    Удобно локально: консоль запускается из терминала, где ты уже авторизован,
+    и генерация заголовка ничего дополнительно не стоит.
+
+    Для GitHub Actions так не выйдет: в раннере нет интерактивной авторизации.
+    Там нужен либо ANTHROPIC_API_KEY, либо долгоживущий токен из
+    `claude setup-token`, положенный в секрет CLAUDE_CODE_OAUTH_TOKEN.
+    """
+    import shutil
+    import subprocess
+
+    s = get_settings()
+    binary = s.get_path("summarize.cli_binary", "claude")
+    if shutil.which(binary) is None:
+        raise LLMError(
+            f"{binary} не найден в PATH. Поставь Claude Code или переключи "
+            "summarize.provider на anthropic."
+        )
+
+    cmd = [
+        binary, "-p", user,
+        "--system-prompt", system,
+        "--output-format", "json",
+        "--model", str(s.require("summarize.model")),
+        # чистая генерация текста: инструменты не нужны и только замедляют
+        "--allowedTools", "",
+    ]
+    timeout = int(s.get_path("summarize.cli_timeout_seconds", 180))
+
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LLMError(f"{binary} не ответил за {timeout} с") from exc
+
+    if not proc.stdout.strip():
+        raise LLMError(f"{binary} ничего не вернул: {proc.stderr.strip()[:300]}")
+
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise LLMError(f"{binary} вернул не JSON: {proc.stdout[:300]}") from exc
+
+    if data.get("is_error") or data.get("subtype") not in (None, "success"):
+        # самая частая причина — протухшая авторизация; говорим прямо, что делать
+        detail = str(data.get("result") or data.get("error") or "неизвестная ошибка")
+        hint = ""
+        if "authenticate" in detail.lower() or "oauth" in detail.lower():
+            hint = (
+                " Запусти `claude` в терминале и авторизуйся, либо переключи "
+                "summarize.provider на anthropic с ANTHROPIC_API_KEY."
+            )
+        raise LLMError(f"{binary}: {detail}.{hint}")
+
+    u = data.get("usage") or {}
+    usage.tokens_in += int(u.get("input_tokens", 0))
+    usage.tokens_out += int(u.get("output_tokens", 0))
+    usage.calls += 1
+    # CLI сам считает стоимость по подписке — она точнее нашей прикидки по ценам
+    if data.get("total_cost_usd"):
+        usage.reported_cost_usd += float(data["total_cost_usd"])
+
+    return data.get("result") or ""
+
+
+_PROVIDERS = {
+    "anthropic": call_anthropic,
+    "claude_cli": call_claude_cli,
+}
 
 
 def summarize_call(system: str, user: str, usage: LLMUsage) -> SummaryOut:
