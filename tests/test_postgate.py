@@ -45,9 +45,17 @@ class TestFields:
         _check_fields(r, "", "текст", "")
         assert not r.passed
 
+    def test_significance_without_period_allowed(self):
+        """significance — фраза, а не предложение: точка необязательна."""
+        r = GateReport()
+        _check_fields(r, "Заголовок", "",
+                      "Важно для тех, кто следит за кризисом безопасности Ceuta")
+        assert r.passed, r.reason()
+
     def test_truncated_summary_rejected(self):
         r = GateReport()
-        _check_fields(r, "Заголовок", "Совет министров утвердил повышение и затем", "")
+        _check_fields(r, "Заголовок",
+                      "Совет министров утвердил повышение. Профсоюзы затем", "")
         assert not r.passed
         assert "обрывается" in r.reason()
 

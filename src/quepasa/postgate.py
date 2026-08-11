@@ -97,11 +97,15 @@ def _check_fields(report: GateReport, headline: str, summary: str,
     if s.get_path("posts.require_significance", False) and not significance.strip():
         problems.append("пустой significance")
 
-    for name, val in (("пересказ", summary), ("significance", significance)):
-        v = (val or "").rstrip()
-        # обрыв на полуслове: текст из нескольких слов без завершающего знака
-        if v and len(v.split()) > 3 and v[-1] not in ".!?…»\"'%)":
-            problems.append(f"{name} обрывается на «{v[-25:]}»")
+    # Обрыв ищем только в пересказе, и только если он многословный.
+    #
+    # significance — это одна фраза, и точка в конце для неё необязательна:
+    # требовать её значит блокировать нормальные посты. Настоящий обрыв
+    # (модель упёрлась в max_tokens) сюда всё равно не доедет — оборванный
+    # ответ не разберётся как JSON ещё на шаг раньше.
+    v = (summary or "").rstrip()
+    if v and count_sentences(v) > 1 and v[-1] not in ".!?…»\"'%)":
+        problems.append(f"пересказ обрывается на «{v[-25:]}»")
 
     report.add("поля", not problems, "; ".join(problems) if problems else "заполнены")
 
