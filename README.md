@@ -195,6 +195,43 @@ python scripts/stats.py
 python -c "import sys;sys.path.insert(0,'src');from quepasa.config import load_dotenv;load_dotenv();from quepasa.telegram import _call;print(_call('getWebhookInfo',{}))"
 ```
 
+## Запуск на сервере
+
+```bash
+git clone https://github.com/p-lee-grimm/te-has-enterado.git quepasa && cd quepasa
+python3.12 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+cp .env.example .env   # заполнить
+./.venv/bin/python run.py --migrate
+./.venv/bin/python manage.py entity seed
+```
+
+База — контейнер с pgvector на свободном порту:
+
+```bash
+docker run -d --name quepasa-pg --restart unless-stopped \
+  -e POSTGRES_PASSWORD=quepasa -e POSTGRES_DB=quepasa \
+  -p 127.0.0.1:55433:5432 -v quepasa_pgdata:/var/lib/postgresql/data \
+  pgvector/pgvector:pg16
+```
+
+Расписание — три скрипта в `bin/`:
+
+```
+7 * * * *        bin/cycle.sh     сбор, эмбеддинги, кластеризация, уборка
+*/30 * * * *     bin/publish.sh   нажатия, автопостинг, дополнение, сверка фактов
+25,30 19,20 * *  bin/evening.sh   вечерний пост (час сверяется по Мадриду в коде)
+```
+
+Скрипты сами задают `PATH` (cron даёт минимальный, и `claude` из `~/.local/bin`
+в нём не виден) и берут `flock`: сбор идёт три минуты, и второй прогон поверх
+первого подрался бы за фиды и за квоту.
+
+Проверить, живо ли всё:
+
+```bash
+./.venv/bin/python run.py --status
+```
+
 ## Как это устроено
 
 ```
