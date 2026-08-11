@@ -696,7 +696,7 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
     from datetime import datetime, timezone
 
     from .config import env, get_settings
-    from .entities import render_cards_html
+    from .entities import mark_entities, render_cards_html
 
     s = get_settings()
     window = float(s.get_path("entities.backfill_window_hours", 168))
@@ -713,18 +713,27 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
         if ent is None or ent["card_status"] != "approved" or not (ent["card"] or "").strip():
             return {**stats, "status": "skip", "reason": "карточка не утверждена"}
 
-        # посты, где имя встретилось, но пояснения не было
-        rows = conn.execute(
+        # Ищем по тексту поста, а не по entity_mentions: сущности ещё не было,
+        # когда пост выходил, поэтому упоминание в ту таблицу не попало —
+        # ровно в этом случае карточка и нужна задним числом.
+        published = conn.execute(
             """
-            SELECT DISTINCT p.*
-            FROM entity_mentions m JOIN posts p ON p.id = m.post_id
-            WHERE m.entity_id = %s AND NOT m.shown
-              AND p.status = 'published' AND p.message_id IS NOT NULL
-              AND p.published_at >= now() - make_interval(hours => %s)
-            ORDER BY p.published_at DESC
+            SELECT * FROM posts
+            WHERE status = 'published' AND message_id IS NOT NULL
+              AND published_at >= now() - make_interval(hours => %s)
+            ORDER BY published_at DESC
             """,
-            (entity_id, int(window)),
+            (int(window),),
         ).fetchall()
+
+    # Отбираем тем же mark_entities, который потом поставит звёздочку: если
+    # он текст не меняет, звёздочке взяться неоткуда, и править нечего.
+    ent_d = dict(ent)
+    rows = [
+        p for p in published
+        if entity_id not in (p.get("entity_ids") or [])
+        and mark_entities(p["header_md"] or "", [ent_d]) != (p["header_md"] or "")
+    ]
 
     stats["checked"] = len(rows)
     if len(rows) > max_posts:

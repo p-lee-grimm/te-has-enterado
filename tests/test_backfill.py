@@ -75,7 +75,7 @@ class TestBackfillSelection:
             if "FROM entities WHERE id = %s" in flat:
                 ent = self.ent
                 return type("R", (), {"fetchone": lambda s: ent})()
-            if "entity_mentions" in flat and "JOIN posts" in flat:
+            if flat.startswith("SELECT * FROM posts"):
                 posts = self.posts
                 return type("R", (), {"fetchall": lambda s: posts})()
             return type("R", (), {"fetchall": lambda s: [], "fetchone": lambda s: None})()
@@ -91,9 +91,9 @@ class TestBackfillSelection:
         monkeypatch.setattr(posts_mod, "cluster_articles", lambda c, cid: ART)
         return posts_mod.backfill_entity_card("oscar-puente", dry_run=True), conn
 
-    def _post(self, pid=1, entity_ids=None):
+    def _post(self, pid=1, entity_ids=None, header="**Óscar Puente и король**"):
         return {"id": pid, "cluster_id": 10, "message_id": 100 + pid,
-                "header_md": "**Óscar Puente и король**", "category": "политика",
+                "header_md": header, "category": "политика",
                 "one_sided": False, "significance": "", "related_md": "",
                 "entity_ids": entity_ids or []}
 
@@ -128,3 +128,19 @@ class TestBackfillSelection:
         assert res["edited"] == 20, "потолок из конфига"
         assert any("правим первые" in r.getMessage() for r in caplog.records), \
             "о пропущенных надо сказать вслух"
+
+    def test_post_without_the_name_is_not_touched(self, monkeypatch):
+        """Отбор идёт тем же mark_entities, что ставит звёздочку."""
+        res, _ = self._run(monkeypatch, CARD,
+                           [self._post(header="**Погода в Мадриде**")])
+        assert res["checked"] == 0 and res["edited"] == 0
+
+    def test_post_already_showing_the_card_is_skipped(self, monkeypatch):
+        res, _ = self._run(monkeypatch, CARD,
+                           [self._post(entity_ids=["oscar-puente"])])
+        assert res["checked"] == 0
+
+    def test_entity_created_after_the_post_is_still_found(self, monkeypatch):
+        """Главный случай: сущности не было, когда пост выходил."""
+        res, _ = self._run(monkeypatch, CARD, [self._post()])
+        assert res["edited"] == 1, "запись в entity_mentions тут отсутствует"
