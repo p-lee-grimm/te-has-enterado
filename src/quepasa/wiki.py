@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -117,7 +117,11 @@ def fetch_for_entity(name: str, url_es: str | None = None,
     статья по явному URL — нет.
     """
     if url_es and "/wiki/" in url_es:
-        title = url_es.rsplit("/wiki/", 1)[1]
+        # Ссылка из браузера уже процентно закодирована, а summary() кодирует
+        # заголовок сам. Без unquote «%C3%93scar» превращается в
+        # «%25C3%2593scar», и Википедия отвечает 403 — то есть ровно на
+        # именах с диакритикой, ради которых карточки и нужны.
+        title = unquote(url_es.rsplit("/wiki/", 1)[1])
         lang = url_es.split("//", 1)[-1].split(".", 1)[0]
         got = _with_retry(lambda: summary(title, lang))
         if got:

@@ -61,3 +61,36 @@ class TestLooksLikeUrl:
     def test_prose_mentioning_url_is_not_bare(self):
         """Текст со ссылкой внутри — это всё-таки текст, а не голый адрес."""
         assert not looks_like_url("см. https://elpais.com/x подробнее")
+
+
+class TestTitleFromUrl:
+    """Заголовок из адреса: ссылку владелец копирует из браузера."""
+
+    def test_encoded_title_decoded_once(self, monkeypatch):
+        """Двойное кодирование давало 403 — и только на именах с диакритикой."""
+        import quepasa.wiki as wiki
+        seen = {}
+
+        def fake_summary(title, lang):
+            seen["title"] = title
+            return {"extract": "текст", "url": "https://x", "title": title}
+
+        monkeypatch.setattr(wiki, "summary", fake_summary)
+        monkeypatch.setattr(wiki, "_with_retry", lambda fn: fn())
+        wiki.fetch_for_entity("Óscar Puente", PUENTE)
+        # подчёркивание — родная форма заголовка в Википедии, его не трогаем;
+        # важно, что диакритика раскодирована ровно один раз
+        assert seen["title"] == "Óscar_Puente"
+
+    def test_plain_ascii_title_untouched(self, monkeypatch):
+        import quepasa.wiki as wiki
+        seen = {}
+
+        def fake_summary(title, lang):
+            seen["title"] = title
+            return {"extract": "текст", "url": "https://x", "title": title}
+
+        monkeypatch.setattr(wiki, "summary", fake_summary)
+        monkeypatch.setattr(wiki, "_with_retry", lambda fn: fn())
+        wiki.fetch_for_entity("Felipe VI", "https://es.wikipedia.org/wiki/Felipe_VI")
+        assert seen["title"] == "Felipe_VI"

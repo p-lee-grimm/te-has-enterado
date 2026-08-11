@@ -270,9 +270,12 @@ def _regenerate_from_url(entity_id: str, wiki_url: str) -> None:
         notify_owner(f"Сущности <code>{entity_id}</code> уже нет.")
         return
 
+    # Не только CardError: Википедия отвечает и 403, и 429, и это прилетает
+    # TransientError. Одна недоступная статья не должна ронять разбор нажатий.
     try:
         draft = generate(e["name_es"], wiki_url)
-    except CardError as exc:
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Карточка %s по ссылке не собралась: %s", entity_id, exc)
         notify_owner(f"По этой ссылке карточка не собралась: {exc}")
         return
 
