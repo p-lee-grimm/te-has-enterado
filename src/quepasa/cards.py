@@ -234,6 +234,58 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     notify_owner("\n".join(lines), reply_markup=markup)
 
 
+_WIKI_RE = re.compile(r"https?://[a-z]{2,3}\.(?:m\.)?wikipedia\.org/wiki/\S+", re.I)
+_URL_RE = re.compile(r"^\s*https?://\S+\s*$", re.I)
+
+
+def wiki_url_in(text: str) -> str | None:
+    """Ссылка на статью Википедии из ответа владельца.
+
+    Якорь отрезаем: браузер добавляет к скопированной ссылке «#:~:text=…»
+    с подсвеченной цитатой, а из адреса мы берём заголовок статьи — с хвостом
+    он превратится в несуществующий.
+    """
+    m = _WIKI_RE.search(text or "")
+    return m.group(0).split("#")[0] if m else None
+
+
+def looks_like_url(text: str) -> bool:
+    return bool(_URL_RE.match(text or ""))
+
+
+def _regenerate_from_url(entity_id: str, wiki_url: str) -> None:
+    """Пересобирает карточку по подтверждённой владельцем статье.
+
+    Статья, заданная ссылкой, не требует подтверждения личности — это её и
+    подтвердило, — поэтому пересобранная карточка приходит уже с кнопками.
+    """
+    from .db import connect
+    from .telegram import notify_owner
+
+    with connect() as conn:
+        e = conn.execute(
+            "SELECT * FROM entities WHERE id = %s", (entity_id,)
+        ).fetchone()
+    if e is None:
+        notify_owner(f"Сущности <code>{entity_id}</code> уже нет.")
+        return
+
+    try:
+        draft = generate(e["name_es"], wiki_url)
+    except CardError as exc:
+        notify_owner(f"По этой ссылке карточка не собралась: {exc}")
+        return
+
+    with connect() as conn:
+        conn.execute(
+            "UPDATE entities SET card=%s, wiki_url_es=%s, card_status='draft', "
+            "card_updated_at=now() WHERE id=%s",
+            (draft["card"], draft["wiki_url"], entity_id),
+        )
+    log.info("Карточка %s пересобрана по ссылке владельца", entity_id)
+    send_for_review(dict(e), draft)
+
+
 def _state(conn, key: str) -> str | None:
     row = conn.execute("SELECT value FROM bot_state WHERE key = %s", (key,)).fetchone()
     return row["value"] if row else None
@@ -255,7 +307,7 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
     """
     from .db import connect
     from .telegram import (
-        TelegramError, answer_callback, edit_reply_markup, get_updates,
+        TelegramError, answer_callback, edit_reply_markup, get_updates, notify_owner,
     )
 
     stats: dict[str, int] = {"approved": 0, "deleted": 0, "edited": 0}
@@ -391,14 +443,30 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
                 edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
             continue
 
-        # правка реплаем: текст ответа становится карточкой
+        # Ответ реплаем: либо ссылка на статью — это подтверждение личности,
+        # либо текст — это готовая карточка. Ответ без реакции недопустим:
+        # владелец не отличает «не понял» от «сломалось».
         msg = upd.get("message") or {}
         handled = False
         reply_to = msg.get("reply_to_message") or {}
         text = (msg.get("text") or "").strip()
         if text and reply_to.get("text"):
             entity_id = _entity_from_review_text(reply_to.get("text", ""))
-            if entity_id and len(text) <= MAX_CARD:
+            wiki = wiki_url_in(text)
+            if entity_id and wiki:
+                handled = True
+                stats["confirmed"] = stats.get("confirmed", 0) + 1
+                _regenerate_from_url(entity_id, wiki)
+            elif entity_id and looks_like_url(text):
+                # не Википедия — карточкой это не станет ни при каком раскладе
+                handled = True
+                notify_owner("Ссылка не на Википедию — карточку из неё не собрать. "
+                             "Пришли ссылку на статью или текст карточки.")
+            elif entity_id and len(text) > MAX_CARD:
+                handled = True
+                notify_owner(f"Слишком длинно: {len(text)} символов при "
+                             f"пределе {MAX_CARD}. Карточка не заменена.")
+            elif entity_id:
                 with connect() as conn:
                     conn.execute(
                         "UPDATE entities SET card=%s, card_status='approved', "
@@ -406,6 +474,7 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
                 stats["edited"] += 1
                 handled = True
                 log.info("Карточка %s заменена правкой владельца", entity_id)
+                notify_owner(f"Карточка <code>{entity_id}</code> заменена и утверждена.")
         if not handled and not upd.get("callback_query"):
             unhandled += 1
 

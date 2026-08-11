@@ -163,10 +163,13 @@ def main() -> int:
     if args.autopost:
         from quepasa.posts import autopost
         stats = autopost(dry_run=args.dry_run)
+        # Публикация уже произошла; это только печать итога. Ключи берём
+        # через get: расхождение с posts.autopost стоило падения после каждой
+        # публикации — пост уходил, а прогон завершался ошибкой.
         for it in stats["items"]:
             log.info("  сюжет %s · %s ист. · %s · %s",
-                     it["cluster_id"], it["n_sources"],
-                     ",".join(it["buckets"]), it["headline"][:70])
+                     it.get("cluster_id"), it.get("n_sources"),
+                     ",".join(it.get("buckets") or []), (it.get("headline") or "")[:70])
         if args.dry_run:
             log.info("DRY-RUN: ничего не опубликовано. Для запуска — --commit")
         return 0
