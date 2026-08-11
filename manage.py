@@ -145,7 +145,9 @@ def cmd_backfill(args) -> int:
             SELECT id, name_es, mentions_count FROM entities
             WHERE card_status = 'approved' AND NOT never_explain
               AND btrim(card) <> ''
-              AND (%s IS NULL OR id = %s)
+              -- приведение обязательно: без него Postgres не выводит тип
+              -- параметра в «%s IS NULL» и падает на IndeterminateDatatype
+              AND (%s::text IS NULL OR id = %s::text)
             ORDER BY mentions_count ASC, id
             """,
             (args.id, args.id),
