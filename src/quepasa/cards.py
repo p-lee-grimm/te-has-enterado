@@ -178,6 +178,56 @@ def news_urls_for(entity: dict[str, Any]) -> list[dict[str, str]]:
     return list(row["sample_urls"]) if row and row["sample_urls"] else []
 
 
+def news_source_text(conn, name: str, limit: int = 8) -> str:
+    """Заголовки и подводки новостей, где встретилось имя.
+
+    Источник для карточки, когда в Википедии статьи нет. Полные тексты живут
+    72 часа, поэтому берём то, что переживает уборку: заголовок и подводку
+    из ленты.
+    """
+    rows = conn.execute(
+        """
+        SELECT a.title, coalesce(a.summary_feed, '') AS summary, s.name AS source
+        FROM articles a JOIN sources s ON s.id = a.source_id
+        WHERE a.title ILIKE %s OR a.summary_feed ILIKE %s OR a.body ILIKE %s
+        ORDER BY a.published_at DESC NULLS LAST
+        LIMIT %s
+        """,
+        (f"%{name}%", f"%{name}%", f"%{name}%", limit),
+    ).fetchall()
+    return "\n\n".join(
+        f"[{r['source']}] {r['title']}\n{r['summary'][:400]}".strip() for r in rows
+    )
+
+
+def generate_from_news(name: str, source_text: str) -> dict[str, Any]:
+    """Карточка по новостям, когда в Википедии статьи нет.
+
+    Проверки те же, что и для энциклопедии: длина, запрещённые обороты,
+    сверка с источником. Источник слабее, поэтому пустой ответ модели —
+    штатный исход, а не ошибка.
+    """
+    if not source_text.strip():
+        raise CardError(f"новостей с упоминанием «{name}» не осталось в базе")
+
+    usage = LLMUsage()
+    data = _llm_json(
+        load_prompt("entity_card_news.md"),
+        f"Имя: {name}\n\nНовости:\n{source_text[:6000]}",
+        usage,
+    )
+    card = (data.get("card") or "").strip()
+    if not card:
+        raise CardError("по новостям не удалось понять, кто это — "
+                        "нужен текст карточки от тебя")
+
+    problems = validate(card, source_text)
+    if not problems:
+        problems = verify_against_source(card, source_text, usage)
+    return {"card": card, "problems": problems, "wiki_url": None,
+            "source_text": source_text, "cost_usd": usage.cost_usd}
+
+
 def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     """Отправляет черновик карточки в чат ревью с кнопками."""
     import html as _html
@@ -220,18 +270,29 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
                      "entity add … --wiki &lt;ссылка&gt;</i>")
 
     if problems:
-        lines += ["", "<i>Кнопок нет: подтверди личность и поправь текст реплаем.</i>"]
-    lines += ["", "<i>Ответь реплаем, чтобы заменить текст карточки.</i>"]
+        lines += ["", "<i>Утвердить нельзя, пока не подтверждена личность. "
+                      "Пришли реплаем ссылку на статью Википедии или текст "
+                      "карточки — или собери по новостям.</i>"]
+    else:
+        lines += ["", "<i>Ответь реплаем, чтобы заменить текст карточки.</i>"]
 
-    # кнопки даём только чистому черновику: подтвердить «в один тап» то,
-    # что не прошло проверку, — самый простой способ протащить ошибку
-    markup = None if problems else {
-        "inline_keyboard": [[
+    # Утверждение «в один тап» даём только чистому черновику: подтвердить
+    # непроверенное одним нажатием — самый простой способ протащить ошибку.
+    # Пересборка по новостям — не утверждение, она делает лишь новый черновик,
+    # поэтому доступна всегда и особенно нужна как раз при проблемах.
+    rows = []
+    if not problems:
+        rows.append([
             {"text": "✅ Ок", "callback_data": f"card:ok:{entity['id']}"},
             {"text": "🗑 Удалить", "callback_data": f"card:del:{entity['id']}"},
-        ]]
-    }
-    notify_owner("\n".join(lines), reply_markup=markup)
+        ])
+    rows.append([
+        {"text": "🤖 Собрать по новостям", "callback_data": f"card:news:{entity['id']}"},
+    ])
+    if problems:
+        rows[-1].append(
+            {"text": "🗑 Удалить", "callback_data": f"card:del:{entity['id']}"})
+    notify_owner("\n".join(lines), reply_markup={"inline_keyboard": rows})
 
 
 _WIKI_RE = re.compile(r"https?://[a-z]{2,3}\.(?:m\.)?wikipedia\.org/wiki/\S+", re.I)
@@ -286,6 +347,36 @@ def _regenerate_from_url(entity_id: str, wiki_url: str) -> None:
             (draft["card"], draft["wiki_url"], entity_id),
         )
     log.info("Карточка %s пересобрана по ссылке владельца", entity_id)
+    send_for_review(dict(e), draft)
+
+
+def _regenerate_from_news(entity_id: str) -> None:
+    """Пересобирает карточку по новостям и отправляет на ревью."""
+    from .db import connect
+    from .telegram import notify_owner
+
+    with connect() as conn:
+        e = conn.execute(
+            "SELECT * FROM entities WHERE id = %s", (entity_id,)
+        ).fetchone()
+        if e is None:
+            notify_owner(f"Сущности <code>{entity_id}</code> уже нет.")
+            return
+        source_text = news_source_text(conn, e["name_es"])
+
+    try:
+        draft = generate_from_news(e["name_es"], source_text)
+    except Exception as exc:  # noqa: BLE001 — одна неудача не роняет разбор
+        log.warning("Карточка %s по новостям не собралась: %s", entity_id, exc)
+        notify_owner(f"<b>{e['name_es']}</b>: {exc}")
+        return
+
+    with connect() as conn:
+        conn.execute(
+            "UPDATE entities SET card=%s, card_status='draft', "
+            "card_updated_at=now() WHERE id=%s", (draft["card"], entity_id),
+        )
+    log.info("Карточка %s собрана по новостям", entity_id)
     send_for_review(dict(e), draft)
 
 
@@ -431,6 +522,18 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
 
         if cq and data.startswith("card:"):
             _, action, entity_id = data.split(":", 2)
+
+            if action == "news":
+                # отвечаем сразу: сборка идёт в модель и занимает секунды,
+                # а callback_query столько не ждёт
+                answer_callback(cq["id"], "Собираю по новостям…")
+                msg = cq.get("message") or {}
+                if msg:
+                    edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
+                _regenerate_from_news(entity_id)
+                stats["generated"] = stats.get("generated", 0) + 1
+                continue
+
             with connect() as conn:
                 if action == "ok":
                     conn.execute(

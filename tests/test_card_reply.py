@@ -94,3 +94,55 @@ class TestTitleFromUrl:
         monkeypatch.setattr(wiki, "_with_retry", lambda fn: fn())
         wiki.fetch_for_entity("Felipe VI", "https://es.wikipedia.org/wiki/Felipe_VI")
         assert seen["title"] == "Felipe_VI"
+
+
+class TestSearchHint:
+    """Уточнение к имени должно сужать поиск, а не топить его."""
+
+    def test_long_context_is_trimmed(self, monkeypatch):
+        """Склеенные заголовки давали запрос в 300 символов и ответ 500."""
+        import quepasa.wiki as wiki
+        seen = []
+        monkeypatch.setattr(wiki, "search", lambda q, **k: seen.append(q) or [])
+        wiki.fetch_for_entity("Javier Negre", None, "заголовок " * 60)
+        assert len(seen[0]) < 100, f"запрос длиной {len(seen[0])}"
+
+    def test_falls_back_to_bare_name(self, monkeypatch):
+        import quepasa.wiki as wiki
+        seen = []
+        monkeypatch.setattr(wiki, "search", lambda q, **k: seen.append(q) or [])
+        wiki.fetch_for_entity("Javier Negre", None, "periodista")
+        assert seen == ["Javier Negre periodista", "Javier Negre"]
+
+
+class TestReviewButtons:
+    """Кнопка сборки нужна именно тогда, когда Википедия не помогла."""
+
+    @staticmethod
+    def _markup(monkeypatch, problems):
+        import quepasa.cards as cards
+        import quepasa.telegram as tg
+        got = {}
+        monkeypatch.setattr(tg, "notify_owner",
+                            lambda t, **k: got.update(markup=k.get("reply_markup")))
+        monkeypatch.setattr(cards, "news_urls_for", lambda e: [])
+        cards.send_for_review(
+            {"id": "javier-negre", "name_es": "Javier Negre", "type": "person"},
+            {"card": "Журналист.", "problems": problems, "wiki_url": None},
+        )
+        return [b["callback_data"]
+                for row in got["markup"]["inline_keyboard"] for b in row]
+
+    def test_news_button_present_when_wiki_failed(self, monkeypatch):
+        data = self._markup(monkeypatch, ["в Википедии не нашлось статьи"])
+        assert "card:news:javier-negre" in data
+
+    def test_no_one_tap_approve_when_unverified(self, monkeypatch):
+        """Утвердить непроверенное одним нажатием нельзя — это и есть защита."""
+        data = self._markup(monkeypatch, ["статья найдена поиском"])
+        assert "card:ok:javier-negre" not in data
+
+    def test_clean_draft_can_be_approved(self, monkeypatch):
+        data = self._markup(monkeypatch, [])
+        assert "card:ok:javier-negre" in data
+        assert "card:news:javier-negre" in data

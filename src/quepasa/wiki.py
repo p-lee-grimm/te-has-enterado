@@ -21,6 +21,9 @@ from .net import user_agent
 log = logging.getLogger(__name__)
 
 TIMEOUT = 30
+# Уточнение к имени при поиске. Длиннее — поиск начинает отвечать 500,
+# и вместо сужения получается отказ.
+_MAX_HINT = 60
 
 
 def _api(lang: str) -> str:
@@ -129,8 +132,11 @@ def fetch_for_entity(name: str, url_es: str | None = None,
             got["candidates"] = []
             return got
 
-    # контекст сужает поиск: «Galán» без него находит однофамильцев
-    hits = search(f"{name} {context}".strip()) or search(name)
+    # Контекст сужает поиск: «Galán» без него находит однофамильцев. Но он же
+    # его и топит: склеенные заголовки давали запрос в три сотни символов,
+    # и поиск отвечал 500. Берём короткий хвост — уточнение, а не пересказ.
+    hint = " ".join((context or "").split())[:_MAX_HINT]
+    hits = search(f"{name} {hint}".strip()) or search(name)
     if not hits:
         return None
     got = summary(hits[0]["title"])
