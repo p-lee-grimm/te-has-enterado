@@ -166,7 +166,7 @@ def main() -> int:
         for it in stats["items"]:
             log.info("  сюжет %s · %s ист. · %s · %s",
                      it["cluster_id"], it["n_sources"],
-                     ",".join(it["leans"]), it["headline"][:70])
+                     ",".join(it["buckets"]), it["headline"][:70])
         if args.dry_run:
             log.info("DRY-RUN: ничего не опубликовано. Для запуска — --commit")
         return 0

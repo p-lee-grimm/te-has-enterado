@@ -369,16 +369,18 @@ def notify_new_unresolved(conn, min_count: int | None = None) -> int:
     return len(rows)
 
 
-def act_on_unresolved(conn, unres_id: int, action: str) -> tuple[str | None, str]:
-    """Обрабатывает нажатие на предложении. Возвращает (entity_id, ответ владельцу).
+def act_on_unresolved(conn, unres_id: int, action: str) -> tuple[str | None, str, str]:
+    """Обрабатывает нажатие на предложении.
 
+    Возвращает (entity_id, ответ владельцу, контекст для поиска в Википедии).
     entity_id непустой только тогда, когда для сущности надо собрать карточку.
+    Контекст обязателен: «Javier Negre» без него поиск разрешает в «San Javier».
     """
     row = conn.execute(
         "SELECT * FROM entity_unresolved WHERE id = %s", (unres_id,)
     ).fetchone()
     if row is None:
-        return None, "Этой строки в очереди уже нет"
+        return None, "Этой строки в очереди уже нет", ""
 
     name = (row["surface_raw"] or row["surface"]).strip()
 
@@ -386,22 +388,27 @@ def act_on_unresolved(conn, unres_id: int, action: str) -> tuple[str | None, str
         conn.execute(
             "UPDATE entity_unresolved SET ignored_at = now() WHERE id = %s", (unres_id,)
         )
-        return None, f"{name}: больше не предлагаю"
+        return None, f"{name}: больше не предлагаю", ""
 
     if action == "alias":
         target = row["candidate_id"]
         if not target:
-            return None, "Не к чему привязывать"
+            return None, "Не к чему привязывать", ""
         conn.execute(
             "INSERT INTO entity_aliases (entity_id, alias) VALUES (%s, %s) "
             "ON CONFLICT DO NOTHING", (target, row["surface"]),
         )
         conn.execute("DELETE FROM entity_unresolved WHERE id = %s", (unres_id,))
-        return None, f"{name} → {target}"
+        return None, f"{name} → {target}", ""
 
     entity_id = entity_slug(name)
     if not entity_id:
-        return None, "Из этого имени не выходит идентификатор"
+        return None, "Из этого имени не выходит идентификатор", ""
+
+    # заголовок новости — лучший уточнитель, какой у нас есть: он про то же
+    # событие, в котором имя встретилось
+    titles = [u.get("title", "") for u in (row["sample_urls"] or [])]
+    context = (row.get("sample_context") or " ".join(titles))[:300]
 
     # Сущность с таким id уже есть — значит, не сматчилось написание, а не
     # появился новый человек. Вторая запись развела бы факты по двум карточкам.
@@ -422,8 +429,8 @@ def act_on_unresolved(conn, unres_id: int, action: str) -> tuple[str | None, str
     conn.execute("DELETE FROM entity_unresolved WHERE id = %s", (unres_id,))
 
     if exists:
-        return None, f"{name}: добавлено написанием к {entity_id}"
-    return entity_id, f"{name}: собираю карточку…"
+        return None, f"{name}: добавлено написанием к {entity_id}", ""
+    return entity_id, f"{name}: собираю карточку…", context
 
 
 # ------------------------------------------------------- замерный режим

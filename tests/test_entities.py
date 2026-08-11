@@ -336,7 +336,7 @@ class TestUnresolvedActions:
     def test_add_creates_entity_with_spanish_name(self):
         from quepasa.entities import act_on_unresolved
         conn = self.Conn(self._row())
-        entity_id, answer = act_on_unresolved(conn, 5, "add")
+        entity_id, answer, _ = act_on_unresolved(conn, 5, "add")
         assert entity_id == "oscar-puente"
         ins = conn.ran("INSERT INTO entities")
         assert ins and ins[0][1] == ("oscar-puente", "Óscar Puente")
@@ -352,7 +352,7 @@ class TestUnresolvedActions:
         """Тот же slug — это другое написание, а не второй человек."""
         from quepasa.entities import act_on_unresolved
         conn = self.Conn(self._row(), entity_exists=True)
-        entity_id, _ = act_on_unresolved(conn, 5, "add")
+        entity_id, _, _ = act_on_unresolved(conn, 5, "add")
         assert entity_id is None, "карточку заново не собираем"
         assert not conn.ran("INSERT INTO entities")
         assert conn.ran("INSERT INTO entity_aliases")
@@ -361,7 +361,7 @@ class TestUnresolvedActions:
         """Иначе имя вернётся в очередь при следующем упоминании."""
         from quepasa.entities import act_on_unresolved
         conn = self.Conn(self._row())
-        entity_id, _ = act_on_unresolved(conn, 5, "skip")
+        entity_id, _, _ = act_on_unresolved(conn, 5, "skip")
         assert entity_id is None
         assert conn.ran("SET ignored_at = now()")
 
@@ -375,13 +375,29 @@ class TestUnresolvedActions:
     def test_missing_row_is_reported_not_crashed(self):
         from quepasa.entities import act_on_unresolved
         conn = self.Conn(None)
-        entity_id, answer = act_on_unresolved(conn, 5, "add")
+        entity_id, answer, _ = act_on_unresolved(conn, 5, "add")
         assert entity_id is None and "уже нет" in answer
 
     def test_slug_strips_accents(self):
         from quepasa.entities import entity_slug
         assert entity_slug("Óscar Puente") == "oscar-puente"
         assert entity_slug("Felipe VI") == "felipe-vi"
+
+    def test_add_passes_news_context_to_wiki_search(self):
+        """«Javier Negre» без контекста поиск разрешил в «San Javier»."""
+        from quepasa.entities import act_on_unresolved
+        row = self._row(raw="Javier Negre")
+        row["sample_urls"] = [{"title": "Óscar Puente critica el saludo del rey "
+                                        "al periodista Javier Negre",
+                               "source": "20minutos", "url": "https://x.es/1"}]
+        _, _, context = act_on_unresolved(self.Conn(row), 5, "add")
+        assert "periodista" in context, "без уточнения ищется однофамилец"
+
+    def test_skip_and_alias_need_no_context(self):
+        from quepasa.entities import act_on_unresolved
+        assert act_on_unresolved(self.Conn(self._row()), 5, "skip")[2] == ""
+        conn = self.Conn(self._row(cand="pedro-sanchez"))
+        assert act_on_unresolved(conn, 5, "alias")[2] == ""
 
 
 class TestMeasureMode:

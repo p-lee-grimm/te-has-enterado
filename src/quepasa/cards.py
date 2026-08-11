@@ -342,7 +342,8 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
             _, action, unres_id = data.split(":", 2)
             from .entities import act_on_unresolved
             with connect() as conn:
-                entity_id, answer = act_on_unresolved(conn, int(unres_id), action)
+                entity_id, answer, context = act_on_unresolved(
+                    conn, int(unres_id), action)
             answer_callback(cq["id"], answer)
             msg = cq.get("message") or {}
             if msg:
@@ -356,7 +357,7 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
                         "SELECT * FROM entities WHERE id = %s", (entity_id,)
                     ).fetchone()
                 try:
-                    draft = generate(e["name_es"], e["wiki_url_es"] or None)
+                    draft = generate(e["name_es"], e["wiki_url_es"] or None, context)
                 except CardError as exc:
                     # без статьи карточки нет, но сущность уже заведена:
                     # показываем её с причиной, текст можно прислать реплаем
