@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from functools import lru_cache
 from typing import Any
 
@@ -82,6 +83,47 @@ TOPIC_HASHTAG = {
     "происшествия": "происшествия",
     "культура/спорт": "культура_и_спорт",
 }
+
+
+# Обороты, с которых начинается пересказ заголовка вместо практического
+# последствия. Промпт это запрещает, но запрет в промпте — просьба, а не
+# гарантия: за неделю в канал ушло десять строк вида «Касается жителей
+# Сеуты, обеспокоенных безопасностью». Читатель это и так понял из заголовка.
+SIGNIFICANCE_JUNK = [
+    re.compile(r"^\s*кас[ае]ется\b", re.I),
+    re.compile(r"^\s*затрагивает\b", re.I),
+    re.compile(r"^\s*важно для\b", re.I),
+    re.compile(r"^\s*отража[ею]т\b", re.I),
+    re.compile(r"^\s*показыва[ею]т\b", re.I),
+    re.compile(r"^\s*свидетельству[ею]т\b", re.I),
+    re.compile(r"^\s*подтвержда[ею]т\b", re.I),
+    re.compile(r"^\s*подтверждение\b", re.I),
+    re.compile(r"^\s*демонстрир[ую]", re.I),
+    # не с начала строки: «Случай привлёк внимание к…» — тот же пустой оборот,
+    # просто с подлежащим впереди. И «ё» пишут не всегда
+    re.compile(r"привл[её]к\w*\s+внимание\b", re.I),
+    re.compile(r"\bподн[ияа]\w*\s+вопрос\b", re.I),
+    re.compile(r"^\s*(станов|ста[её]т|стал\w*)\s+(поводом|предметом|темой)\b", re.I),
+    re.compile(r"^\s*знаков\w*\s+(событие|момент)\b", re.I),
+    re.compile(r"^\s*может (привести|повлиять|стать)\b", re.I),
+    re.compile(r"^\s*разворачивается\b", re.I),
+]
+
+
+def clean_significance(text: str) -> str:
+    """Пустая строка вместо пересказа заголовка.
+
+    Проверка у промпта одна: узнал ли читатель что-то, чего не было
+    в заголовке. Здесь ловятся типовые обороты, которыми модель обходит
+    это правило, когда сказать нечего.
+    """
+    value = (text or "").strip()
+    if not value:
+        return ""
+    if any(p.search(value) for p in SIGNIFICANCE_JUNK):
+        log.info("significance отброшен как пересказ: %s", value[:80])
+        return ""
+    return value
 
 
 def hashtag(category: str) -> str:
@@ -407,7 +449,7 @@ def generate_header(cluster_id: int) -> tuple[str, str, dict]:
         "cost_usd": round(usage.cost_usd, 4),
         "headline": headline,
         "lead": lead,
-        "significance": (data.get("significance") or "").strip(),
+        "significance": clean_significance(data.get("significance")),
         "scope": scope,
         "geo_tag": geo_tag,
         "entities": data.get("entities") or [],
@@ -820,6 +862,93 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
                  entity_id, stats["edited"], stats["checked"],
                  stats["skipped_full"], stats["errors"])
     return {**stats, "status": "ok"}
+
+
+def refresh_published(dry_run: bool = True, window_hours: float | None = None
+                      ) -> dict[str, Any]:
+    """Пересобирает текст вышедших постов под текущие правила рендера.
+
+    Нужна, когда меняется не содержание, а способ показа: появился гео-тег,
+    ужесточилось правило significance. Правка сообщения уведомление не шлёт,
+    поэтому читателя это не беспокоит.
+
+    Отправляем только если текст реально изменился: пустая правка — лишний
+    вызов API и лишняя строчка «изменено» под постом.
+    """
+    from .config import env, get_settings
+    from .entities import render_cards_html
+
+    if window_hours is None:
+        window_hours = float(get_settings().get_path("entities.backfill_window_hours", 168))
+
+    stats: dict[str, Any] = {"checked": 0, "edited": 0, "unchanged": 0, "errors": 0,
+                             "cleaned": 0, "items": []}
+
+    with connect() as conn:
+        posts_ = conn.execute(
+            """
+            SELECT * FROM posts
+            WHERE status = 'published' AND message_id IS NOT NULL
+              AND published_at >= now() - make_interval(hours => %s)
+            ORDER BY id
+            """,
+            (int(window_hours),),
+        ).fetchall()
+
+    stats["checked"] = len(posts_)
+    channel = env("TELEGRAM_CHANNEL_ID", required=True) if not dry_run else ""
+
+    for post in posts_:
+        significance = clean_significance(post.get("significance") or "")
+        dropped = bool((post.get("significance") or "").strip()) and not significance
+
+        with connect() as conn:
+            articles = cluster_articles(conn, post["cluster_id"])
+            cards = [dict(r) for r in conn.execute(
+                "SELECT * FROM entities WHERE id = ANY(%s)",
+                (list(post.get("entity_ids") or []),),
+            ).fetchall()]
+
+        text = compose_html(
+            post["header_md"], articles, post["category"],
+            one_sided=bool(post.get("one_sided")), significance=significance,
+            cards_html=render_cards_html(cards), cards=cards,
+            related_md=post.get("related_md") or "",
+            geo_tag=post.get("geo_tag"),
+        )
+        if dropped:
+            stats["cleaned"] += 1
+        stats["items"].append({"post_id": post["id"], "message_id": post["message_id"],
+                               "dropped_significance": dropped,
+                               "geo_tag": post.get("geo_tag")})
+        if dry_run:
+            stats["edited"] += 1
+            continue
+
+        try:
+            edit_message_text(channel, int(post["message_id"]), text)
+        except Exception as exc:  # noqa: BLE001 — один пост не роняет остальные
+            # Сравнивать текст самим значило бы хранить отправленный HTML и
+            # держать его в согласии со всеми местами правки. Телеграм и так
+            # отвергает правку, не меняющую сообщение, — этого достаточно.
+            if "not modified" in str(exc):
+                stats["unchanged"] += 1
+                continue
+            log.warning("Пост %s не пересобрался: %s", post["id"], exc)
+            stats["errors"] += 1
+            continue
+
+        with connect() as conn:
+            conn.execute(
+                "UPDATE posts SET significance = %s, edited_at = now(), "
+                "edit_count = edit_count + 1 WHERE id = %s",
+                (significance, post["id"]),
+            )
+        stats["edited"] += 1
+
+    log.info("Пересборка: проверено %s, изменено %s, вычищено significance %s",
+             stats["checked"], stats["edited"], stats["cleaned"])
+    return stats
 
 
 def sync_all(dry_run: bool = True) -> dict[str, Any]:

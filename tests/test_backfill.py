@@ -200,3 +200,46 @@ class TestSignificanceRendering:
         html = compose_html("**Заголовок**", ART, "политика",
                             significance="Заявление подают до 30 сентября.")
         assert "<i>Заявление подают до 30 сентября.</i>" in html
+
+
+class TestCleanSignificance:
+    """Промпт просит, валидатор гарантирует."""
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize("junk", [
+        "Касается жителей Сеуты, испытывающих опасения в связи с безопасностью.",
+        "Касается болельщиков Barcelona и интересующихся испанским футболом.",
+        "Касается отношений Испании и Марокко по вопросу Сеуты.",
+        "Подтверждение позиции Испании по суверенитету над анклавами",
+        "Отражает политический конфликт вокруг миграционной политики",
+        "Случай привлёк внимание к вопросам защиты прав детей.",
+        "Разворачивается полемика о том, как встречи влияют на имидж.",
+        "Важно для тех, кто живёт в Каталонии.",
+        "Может привести к обострению отношений.",
+        "Показывает позицию правительства по вопросу.",
+    ])
+    def test_restatement_is_dropped(self, junk):
+        from quepasa.posts import clean_significance
+        assert clean_significance(junk) == ""
+
+    @_pytest.mark.parametrize("good", [
+        "Заявление на помощь подают до 30 сентября, через портал SEPE.",
+        "Линия закрыта до декабря, поезда идут в объезд через Валенсию.",
+        "Запрет касается розничной продажи энергетиков подросткам на архипелаге.",
+        "Редкое явление совпадает с жарой: смотреть только через фильтр.",
+        "Продлевать NIE по старым правилам можно ещё три месяца.",
+    ])
+    def test_practical_consequence_survives(self, good):
+        from quepasa.posts import clean_significance
+        assert clean_significance(good) == good
+
+    def test_empty_stays_empty(self):
+        from quepasa.posts import clean_significance
+        assert clean_significance("") == "" and clean_significance(None) == ""
+
+    def test_junk_word_inside_sentence_is_not_a_trigger(self):
+        """Ловим начало строки: «касается» в середине — обычное слово."""
+        from quepasa.posts import clean_significance
+        text = "Запрет касается продажи энергетиков подросткам."
+        assert clean_significance(text) == text

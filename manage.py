@@ -131,6 +131,29 @@ def cmd_add(args) -> int:
     return 0
 
 
+def cmd_refresh(args) -> int:
+    """Пересобирает вышедшие посты под текущие правила рендера."""
+    from quepasa.posts import refresh_published
+
+    res = refresh_published(dry_run=not args.commit, window_hours=args.hours)
+    for it in res["items"]:
+        marks = []
+        if it["dropped_significance"]:
+            marks.append("убрана строка «зачем»")
+        if it["geo_tag"]:
+            marks.append(f"тег {it['geo_tag']}")
+        console.print(f"  пост {it['post_id']} (msg {it['message_id']}): "
+                      + (", ".join(marks) or "пересборка"))
+    console.print(
+        f"\nПроверено: {res['checked']}. "
+        f"{'Изменено' if args.commit else 'Будет изменено'}: {res['edited']}. "
+        f"Без изменений: {res['unchanged']}. Ошибок: {res['errors']}."
+    )
+    if not args.commit:
+        console.print("[dim]Сухой прогон. Чтобы применить — --commit[/]")
+    return 0
+
+
 def cmd_backfill(args) -> int:
     """Разносит утверждённые карточки по уже вышедшим постам.
 
@@ -342,6 +365,13 @@ def main() -> int:
 
     p = ent.add_parser("callbacks"); p.add_argument("--wait", type=int, default=0)
     p.set_defaults(fn=cmd_callbacks)
+
+    p = ent.add_parser("refresh",
+                       help="пересобрать вышедшие посты: гео-теги, significance")
+    p.add_argument("--commit", action="store_true")
+    p.add_argument("--hours", type=float, default=None,
+                   help="окно в часах; по умолчанию из конфига")
+    p.set_defaults(fn=cmd_refresh)
 
     p = ent.add_parser("backfill",
                        help="разнести утверждённые карточки по вышедшим постам")
