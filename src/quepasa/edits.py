@@ -136,7 +136,7 @@ def apply_edit(conn, edit_id: int) -> bool:
     row = conn.execute(
         """
         SELECT e.*, p.cluster_id, p.message_id, p.category, p.significance,
-               p.one_sided, p.entity_ids
+               p.one_sided, p.entity_ids, p.geo_tag, p.related_md
         FROM post_edits e JOIN posts p ON p.id = e.post_id
         WHERE e.id = %s AND e.status = 'pending'
         """,
@@ -162,6 +162,7 @@ def apply_edit(conn, edit_id: int) -> bool:
         one_sided=bool(row["one_sided"]),
         significance=row["significance"] or "",
         cards_html=render_cards_html(cards), cards=cards,
+        related_md=row["related_md"] or "", geo_tag=row["geo_tag"],
     )
     edit_message_text(env("TELEGRAM_CHANNEL_ID"), int(row["message_id"]), text)
 

@@ -6,7 +6,7 @@
 
     [ блок ссылок — собирается заново при каждой правке ]
 
-    [ хэштег категории ]
+    [ хэштеги: тема и место ]
 
 Шапка и блок ссылок разделены намеренно. Издания публикуют не одновременно,
 поэтому пост дополняется: подтянулось ещё одно издание — правим сообщение,
@@ -234,9 +234,21 @@ def legend_md() -> str:
 ONE_SIDED_LINE = "_Пока пишут только издания одного лагеря._"
 
 
+def hashtags(category: str, geo_tag: str | None = None) -> str:
+    """Хэштеги поста: тема и место.
+
+    Гео-тег ставится не всегда: национальная новость его не получает, потому
+    что #Испания в канале про Испанию ничего не сужает. Порядок — тема, потом
+    место: по теме подписываются, по месту ищут.
+    """
+    parts = [t for t in (hashtag(category), (geo_tag or "").strip()) if t]
+    return " ".join(parts)
+
+
 def compose_md(header_md: str, articles: list[dict[str, Any]], category: str,
-               *, one_sided: bool = False, significance: str = "") -> str:
-    """Полный текст поста: шапка, зачем это читателю, оговорка, ссылки, хэштег."""
+               *, one_sided: bool = False, significance: str = "",
+               geo_tag: str | None = None) -> str:
+    """Полный текст поста: шапка, зачем это читателю, оговорка, ссылки, хэштеги."""
     blocks = [(header_md or "").strip()]
     if significance.strip():
         blocks.append(f"_{significance.strip()}_")
@@ -245,16 +257,16 @@ def compose_md(header_md: str, articles: list[dict[str, Any]], category: str,
     links = render_links_md(articles)
     if links:
         blocks.append(links)
-    tag = hashtag(category)
-    if tag:
-        blocks.append(tag)
+    tags = hashtags(category, geo_tag)
+    if tags:
+        blocks.append(tags)
     return "\n\n".join(b for b in blocks if b)
 
 
 def compose_html(header_md: str, articles: list[dict[str, Any]], category: str,
                  *, one_sided: bool = False, significance: str = "",
                  cards_html: str = "", cards: list[dict[str, Any]] | None = None,
-                 related_md: str = "") -> str:
+                 related_md: str = "", geo_tag: str | None = None) -> str:
     """Полный HTML поста.
 
     Карточки собираются отдельным блоком, а не через markdown: blockquote
@@ -268,7 +280,7 @@ def compose_html(header_md: str, articles: list[dict[str, Any]], category: str,
     head = mark_entities(head, cards or [])
     # Два вида связности в одном посте превращают его в оглавление, поэтому
     # «Ранее по теме» не ставится, если пост и так уходит реплаем (§4.2).
-    tail_parts = [related_md, render_links_md(articles), hashtag(category)]
+    tail_parts = [related_md, render_links_md(articles), hashtags(category, geo_tag)]
     tail = "\n\n".join(x for x in tail_parts if x)
 
     blocks = [markdown_to_telegram_html(head)]
@@ -498,6 +510,7 @@ def publish(cluster_id: int, dry_run: bool = True, silent: bool = True,
         cards_html="" if measure else render_cards_html(cards or []),
         cards=cards or [],
         related_md=related_md,
+        geo_tag=post.get("geo_tag"),
     )
     if dry_run:
         log.info("DRY-RUN, пост не отправлен:\n%s", text)
@@ -650,6 +663,7 @@ def sync_post(cluster_id: int, dry_run: bool = True) -> dict[str, Any]:
         cards_html=render_cards_html([dict(r) for r in saved]),
         cards=[dict(r) for r in saved],
         related_md=post.get("related_md") or "",
+        geo_tag=post.get("geo_tag"),
     )
     if dry_run:
         log.info("DRY-RUN: сюжет %s дополнился (%s)%s — правка не отправлена",
@@ -768,6 +782,7 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
             significance=post.get("significance") or "",
             cards_html=render_cards_html(cards), cards=cards,
             related_md=post.get("related_md") or "",
+            geo_tag=post.get("geo_tag"),
         )
 
         if dry_run:
@@ -1175,6 +1190,7 @@ def send_post_for_review(cluster_id: int, cards: list[dict[str, Any]] | None = N
         one_sided=bool(post.get("one_sided")),
         significance=post.get("significance") or "",
         cards_html=render_cards_html(cards or []), cards=cards or [],
+        geo_tag=post.get("geo_tag"),
     )
     notify_owner(
         f"<b>Черновик поста</b>\n\n{body}",

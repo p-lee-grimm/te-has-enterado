@@ -151,3 +151,52 @@ class TestBackfillSelection:
         ent = {**CARD, "never_explain": True}
         res, _ = self._run(monkeypatch, ent, [self._post()])
         assert res["status"] == "skip" and res["edited"] == 0
+
+
+class TestHashtags:
+    """Гео-тег хранился и проверялся воротами, но в пост не попадал."""
+
+    def test_topic_and_place_both_present(self):
+        from quepasa.posts import hashtags
+        assert hashtags("политика", "#Сеута") == "#политика #Сеута"
+
+    def test_topic_first(self):
+        """По теме подписываются, по месту ищут."""
+        from quepasa.posts import hashtags
+        assert hashtags("экономика", "#Каталония").startswith("#экономика")
+
+    def test_national_news_has_no_place(self):
+        """#Испания в канале про Испанию ничего не сужает."""
+        from quepasa.posts import hashtags
+        assert hashtags("политика", None) == "#политика"
+        assert hashtags("политика", "") == "#политика"
+
+    def test_geo_tag_reaches_the_post(self):
+        html = compose_html("**Robles посетила Сеуту**", ART, "политика",
+                            geo_tag="#Сеута")
+        assert "#Сеута" in html
+
+    def test_geo_tag_survives_reedit(self):
+        """Как и related_md: при правке пересобирается весь текст."""
+        from quepasa.entities import render_cards_html
+        html = compose_html("**Заголовок**", ART, "политика",
+                            cards_html=render_cards_html([CARD]), cards=[CARD],
+                            geo_tag="#КастилияИЛеон")
+        assert "#КастилияИЛеон" in html
+
+    def test_compound_name_stays_one_tag(self):
+        """Дефис и пробел обрывают хэштег — потому и camel case."""
+        from quepasa.posts import hashtags
+        assert hashtags("политика", "#КастилияЛаМанча") == "#политика #КастилияЛаМанча"
+
+
+class TestSignificanceRendering:
+    def test_empty_significance_adds_nothing(self):
+        """Пустая строка — норма, а не недоработка."""
+        html = compose_html("**Заголовок**", ART, "политика", significance="")
+        assert "<i>" not in html
+
+    def test_significance_is_italic_when_present(self):
+        html = compose_html("**Заголовок**", ART, "политика",
+                            significance="Заявление подают до 30 сентября.")
+        assert "<i>Заявление подают до 30 сентября.</i>" in html
