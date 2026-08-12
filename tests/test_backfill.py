@@ -243,3 +243,14 @@ class TestCleanSignificance:
         from quepasa.posts import clean_significance
         text = "Запрет касается продажи энергетиков подросткам."
         assert clean_significance(text) == text
+
+    def test_filler_verb_with_subject_in_front(self):
+        """«Решение отражает позицию» — тот же пустой оборот с подлежащим."""
+        from quepasa.posts import clean_significance
+        assert clean_significance("Решение отражает позицию правительства.") == ""
+
+    def test_anchored_verbs_keep_informative_sentences(self):
+        """«Подтверждает» в середине может нести факт — его не режем."""
+        from quepasa.posts import clean_significance
+        text = "Правительство подтверждает выплаты до декабря."
+        assert clean_significance(text) == text
