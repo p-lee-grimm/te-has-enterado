@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from .config import get_settings
@@ -70,6 +71,31 @@ def _check_one_sided_line(report: GateReport, one_sided: bool, body_md: str) -> 
         "односторонность",
         marker in body_md,
         "строка на месте" if marker in body_md else "нет строки об одном лагере",
+    )
+
+
+# Глаголы речи: заголовок с ними сообщает, что разговор состоялся, а не что
+# в нём сказано. «Vivas ответил на заявление министра Марокко о Сеуте» —
+# прочитав это, читатель знает ровно столько же, сколько до заголовка,
+# хотя источники прямо цитировали суть: «Ceuta es España».
+_SPEECH_ACT = re.compile(
+    r"\b(ответил\w*|отреагировал\w*|прокомментировал\w*|высказал\w*ся|"
+    r"выступил\w*\s+с\s+заявлением|обратил\w*ся)\b", re.I
+)
+# Двоеточие, кавычка, тире или «что» — признак того, что суть всё-таки
+# в заголовке: «Vivas ответил: Сеута — это Испания».
+_HAS_SUBSTANCE = re.compile(r"[:«\"—]|\bчто\b", re.I)
+
+
+def _check_headline_substance(report: GateReport, headline: str, summary: str) -> None:
+    """Заголовок про сам факт высказывания без пояснения — пустой пост."""
+    bare = bool(_SPEECH_ACT.search(headline)) and not _HAS_SUBSTANCE.search(headline)
+    ok = not bare or bool((summary or "").strip())
+    report.add(
+        "содержательность",
+        ok,
+        "в заголовке сказано, что именно" if ok
+        else "заголовок сообщает о факте высказывания, а не о его сути, и нет lead",
     )
 
 
@@ -203,6 +229,7 @@ def check_post(
     _check_geo_tag(report, geo_tag)
     _check_one_sided_line(report, one_sided, body_md)
     _check_fields(report, headline, summary, significance)
+    _check_headline_substance(report, headline, summary)
     _check_quotations(report, [headline, summary, significance], articles)
     _check_recent_publication(report, cluster_id)
     if check_urls:

@@ -148,3 +148,46 @@ class TestJunkFilter:
     def test_empty(self):
         from quepasa.posts import is_junk
         assert not is_junk([])
+
+
+class TestHeadlineSubstance:
+    """Заголовок сообщает, ЧТО сказано, а не что кто-то высказался.
+
+    Живой случай: «Vivas ответил на заявление министра Марокко о Сеуте» —
+    без lead и без significance это пост, из которого читатель не узнаёт
+    ничего. Суть при этом была прямо в источниках: «Ceuta es España».
+    """
+
+    @staticmethod
+    def _ok(headline, summary=""):
+        from quepasa.postgate import _check_headline_substance
+        from quepasa.stages.gate import GateReport
+        report = GateReport()
+        _check_headline_substance(report, headline, summary)
+        return report.passed
+
+    def test_bare_speech_act_without_lead_is_blocked(self):
+        assert not self._ok("Vivas ответил на заявление министра Марокко о Сеуте")
+
+    def test_same_headline_passes_with_a_lead(self):
+        """Суть может быть и в lead — читатель её всё равно получит."""
+        assert self._ok(
+            "Vivas ответил на заявление министра Марокко о Сеуте",
+            "Он назвал слова министра безосновательными и заявил, что Сеута — Испания.",
+        )
+
+    def test_substance_in_the_headline_passes(self):
+        assert self._ok("Vivas назвал заявление министра Марокко безосновательным")
+
+    def test_quoted_substance_passes(self):
+        assert self._ok('Vivas ответил министру Марокко: «Сеута — это Испания»')
+
+    def test_chto_clause_passes(self):
+        assert self._ok("Vivas ответил, что Сеута остаётся испанской")
+
+    def test_ordinary_headline_untouched(self):
+        assert self._ok("Балеарские острова запретили продажу энергетиков подросткам")
+
+    def test_other_speech_verbs_caught(self):
+        assert not self._ok("Правительство прокомментировало ситуацию с поездами")
+        assert not self._ok("Мадрид отреагировал на решение суда")
