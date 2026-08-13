@@ -114,6 +114,42 @@ SIGNIFICANCE_JUNK = [
 ]
 
 
+# Испанские названия, которые модель то переводит, то записывает кириллицей.
+# Промпт это запрещает прямо, и всё равно в канал ушло «Автономные сообщества
+# ПП»: запрет на перевод модель обошла транслитерацией аббревиатуры. Две
+# кириллические буквы не говорят читателю ничего — ни перевода, ни оригинала.
+#
+# Порядок важен: длинные формы идут первыми, иначе «Народная партия»
+# успеет развалиться на части.
+NAME_FIXES = [
+    (re.compile(r"\bИспанск\w+\s+социалистическ\w+\s+рабоч\w+\s+парти\w+", re.I), "PSOE"),
+    (re.compile(r"\bНародн\w+\s+парти\w+", re.I), "PP"),
+    (re.compile(r"\bПСОЭ\b"), "PSOE"),
+    (re.compile(r"\bПП\b"), "PP"),
+    (re.compile(r"\bВ[оО]кс\b|\bВОКС\b"), "Vox"),
+    (re.compile(r"\bПодемос\b", re.I), "Podemos"),
+    (re.compile(r"\bСумар\b", re.I), "Sumar"),
+    (re.compile(r"\b[ЖХ]унтс\b", re.I), "Junts"),
+    (re.compile(r"\bСьюдаданос\b", re.I), "Ciudadanos"),
+    (re.compile(r"\bЭрк\b|\bЭРК\b"), "ERC"),
+]
+
+
+def fix_names(text: str) -> str:
+    """Возвращает испанские названия в испанское написание.
+
+    Правило есть в промпте, но промпт — просьба: модель обходит запрет на
+    перевод транслитерацией, а запрет на транслитерацию — переводом.
+    """
+    out = text or ""
+    for pattern, correct in NAME_FIXES:
+        fixed = pattern.sub(correct, out)
+        if fixed != out:
+            log.info("Название приведено к испанскому написанию: %s", correct)
+            out = fixed
+    return out
+
+
 def clean_significance(text: str) -> str:
     """Пустая строка вместо пересказа заголовка.
 
@@ -445,6 +481,7 @@ def generate_header(cluster_id: int) -> tuple[str, str, dict]:
         # национальная новость гео-тега не получает: он ничего не сужает
         geo_tag = None
 
+    headline, lead = fix_names(headline), fix_names(lead)
     header_md = f"**{headline}**" + (f"\n\n{lead}" if lead else "")
     return header_md, topic, {
         "provider": provider,
@@ -453,7 +490,7 @@ def generate_header(cluster_id: int) -> tuple[str, str, dict]:
         "cost_usd": round(usage.cost_usd, 4),
         "headline": headline,
         "lead": lead,
-        "significance": clean_significance(data.get("significance")),
+        "significance": fix_names(clean_significance(data.get("significance"))),
         "scope": scope,
         "geo_tag": geo_tag,
         "entities": data.get("entities") or [],

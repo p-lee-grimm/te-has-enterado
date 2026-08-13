@@ -254,3 +254,50 @@ class TestCleanSignificance:
         from quepasa.posts import clean_significance
         text = "Правительство подтверждает выплаты до декабря."
         assert clean_significance(text) == text
+
+
+class TestNameFixes:
+    """Испанские названия остаются испанскими.
+
+    Живой случай: «Автономные сообщества ПП отказались обсуждать размещение
+    несовершеннолетних Сеуты». Промпт запрещал перевод — модель обошла его
+    транслитерацией аббревиатуры.
+    """
+
+    def test_cyrillic_abbreviation(self):
+        from quepasa.posts import fix_names
+        assert fix_names("Автономные сообщества ПП отказались") == \
+            "Автономные сообщества PP отказались"
+
+    def test_translated_party_name(self):
+        from quepasa.posts import fix_names
+        assert fix_names("Народная партия внесла поправку") == "PP внесла поправку"
+
+    def test_declined_party_name(self):
+        from quepasa.posts import fix_names
+        assert fix_names("Заявление Народной партии") == "Заявление PP"
+
+    def test_psoe_full_name(self):
+        from quepasa.posts import fix_names
+        assert fix_names("Испанская социалистическая рабочая партия выдвинула") == \
+            "PSOE выдвинула"
+
+    def test_transliterated_names(self):
+        from quepasa.posts import fix_names
+        assert fix_names("Подемос и Сумар") == "Podemos и Sumar"
+        assert fix_names("Вокс поддержал") == "Vox поддержал"
+
+    def test_latin_spelling_untouched(self):
+        from quepasa.posts import fix_names
+        text = "PP и PSOE договорились, Vox против"
+        assert fix_names(text) == text
+
+    def test_ordinary_russian_untouched(self):
+        from quepasa.posts import fix_names
+        text = "Правительство поддержало предложение о реформе"
+        assert fix_names(text) == text
+
+    def test_no_match_inside_words(self):
+        """Границы слова: «Народность» — не партия."""
+        from quepasa.posts import fix_names
+        assert fix_names("Народность региона") == "Народность региона"
