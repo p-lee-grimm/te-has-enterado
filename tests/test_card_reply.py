@@ -407,3 +407,38 @@ class TestNewsCrossCheck:
         draft = {"card": "Колумбийский политик.", "wiki_url": "https://w/x",
                  "problems": ["карточка про другого: однофамилец"]}
         assert cards.approve_if_from_wikipedia("luis-carlos", draft) is False
+
+
+class TestRecheckButton:
+    """Сверку можно запустить руками: при сборке новостей могло не быть."""
+
+    @staticmethod
+    def _markup(monkeypatch, draft):
+        import quepasa.cards as cards
+        import quepasa.telegram as tg
+        got = {}
+        monkeypatch.setattr(tg, "notify_owner",
+                            lambda t, **k: got.update(markup=k.get("reply_markup")))
+        monkeypatch.setattr(cards, "news_urls_for", lambda e: [])
+        cards.send_for_review({"id": "mazon", "name_es": "Carlos Mazón",
+                               "type": "person"}, draft)
+        return [b["callback_data"]
+                for r in got["markup"]["inline_keyboard"] for b in r]
+
+    def test_button_on_unverified_card(self, monkeypatch):
+        from quepasa.cards import UNVERIFIED
+        data = self._markup(monkeypatch, {
+            "card": "Депутат.", "problems": [UNVERIFIED], "wiki_url": "https://w/x"})
+        assert "card:check:mazon" in data
+
+    def test_button_on_plain_draft(self, monkeypatch):
+        data = self._markup(monkeypatch, {"card": "Депутат.", "problems": [],
+                                          "wiki_url": "https://w/x"})
+        assert "card:check:mazon" in data
+
+    def test_no_button_when_already_live(self, monkeypatch):
+        """Карточка уже в постах — сверка при сборке прошла."""
+        data = self._markup(monkeypatch, {"card": "Депутат.", "problems": [],
+                                          "wiki_url": "https://w/x",
+                                          "auto_approved": True})
+        assert "card:check:mazon" not in data

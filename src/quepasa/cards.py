@@ -353,6 +353,14 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
             {"text": "✅ Ок", "callback_data": f"card:ok:{entity['id']}"},
             {"text": "🗑 Удалить", "callback_data": f"card:del:{entity['id']}"},
         ])
+    if not draft.get("auto_approved"):
+        # Сверку можно запустить руками: на момент сборки новостей с этим
+        # именем могло не быть — их приносит следующий прогон, а карточка
+        # к тому времени уже лежит в ожидании.
+        rows.append([
+            {"text": "🔍 Сверить с новостями",
+             "callback_data": f"card:check:{entity['id']}"},
+        ])
     rows.append([
         {"text": "🤖 Собрать через Claude", "callback_data": f"card:gen:{entity['id']}"},
     ])
@@ -443,6 +451,52 @@ def approve_if_from_wikipedia(entity_id: str, draft: dict[str, Any]) -> bool:
     draft["auto_approved"] = True
     log.info("Карточка %s утверждена автоматически: источник — Википедия", entity_id)
     return True
+
+
+def recheck_against_news(entity_id: str) -> None:
+    """Сверяет карточку с новостями по требованию и докладывает результат.
+
+    Нужна потому, что сверка при сборке могла не состояться: новостей
+    с этим именем ещё не было в базе, а карточка уже готова и ждёт.
+    Сошлось — публикуем, как и всякую подтверждённую карточку.
+    """
+    from .db import connect
+    from .telegram import notify_owner
+
+    with connect() as conn:
+        e = conn.execute(
+            "SELECT * FROM entities WHERE id = %s", (entity_id,)
+        ).fetchone()
+        if e is None:
+            notify_owner(f"Сущности <code>{entity_id}</code> уже нет.")
+            return
+        news = news_source_text(conn, e["name_es"])
+
+    if not news.strip():
+        notify_owner(f"<b>{e['name_es']}</b>: новостей с этим именем в базе нет — "
+                     f"сверять не с чем. Карточка осталась черновиком.")
+        return
+
+    problems = verify_against_news(e["name_es"], e["card"] or "", news, LLMUsage())
+
+    if problems and problems[0] != UNVERIFIED:
+        notify_owner(f"⚠️ <b>{e['name_es']}</b>: {problems[0]}\n\n"
+                     f"<i>Карточка не опубликована. Перепиши реплаем или удали.</i>")
+        return
+    if problems:
+        notify_owner(f"<b>{e['name_es']}</b>: сверка не дала ответа — "
+                     f"имени в новостях не нашлось. Карточка осталась черновиком.")
+        return
+
+    with connect() as conn:
+        conn.execute(
+            "UPDATE entities SET card_status='approved', card_updated_at=now() "
+            "WHERE id=%s", (entity_id,),
+        )
+    log.info("Карточка %s сверена с новостями по требованию и утверждена", entity_id)
+    _backfill_and_report(entity_id, announce=False)
+    notify_owner(f"✅ <b>{e['name_es']}</b>: сверено с новостями, карточка "
+                 f"добавлена в посты.")
 
 
 def _backfill_and_report(entity_id: str, announce: bool = True) -> None:
@@ -660,6 +714,12 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
 
             # «news» — данные кнопок, разосланных до переименования: сообщения
             # уже лежат в чате, и ломать их нельзя
+            if action == "check":
+                answer_callback(cq["id"], "Сверяю с новостями…")
+                recheck_against_news(entity_id)
+                stats["checked"] = stats.get("checked", 0) + 1
+                continue
+
             if action in ("gen", "news"):
                 # отвечаем сразу: сборка идёт в модель и занимает секунды,
                 # а callback_query столько не ждёт
