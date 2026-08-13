@@ -368,9 +368,9 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
                      "entity add … --wiki &lt;ссылка&gt;</i>")
 
     if problems:
-        lines += ["", "<i>Утвердить нельзя, пока не подтверждена личность. "
-                      "Пришли реплаем ссылку на статью Википедии или текст "
-                      "карточки — или собери через Claude.</i>"]
+        lines += ["", "<i>Проверка не пройдена — решай сам. Можно прислать "
+                      "реплаем ссылку на статью Википедии или текст карточки, "
+                      "пересобрать через Claude или утвердить как есть.</i>"]
     elif draft.get("auto_approved"):
         lines += ["", "<i>Уже показывается в постах. Ответь реплаем, чтобы "
                       "переписать, — посты обновятся сами.</i>"]
@@ -388,9 +388,13 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
         rows.append([
             {"text": "🗑 Убрать из постов", "callback_data": f"card:del:{entity['id']}"},
         ])
-    elif not problems:
+    else:
+        # Кнопка есть всегда. Автоматика решает, что публиковать само,
+        # а владелец — что публиковать вообще; отсутствие кнопки не делало
+        # карточку лучше, оно делало её недоступной.
         rows.append([
-            {"text": "✅ Ок", "callback_data": f"card:ok:{entity['id']}"},
+            {"text": "✅ Всё равно ок" if problems else "✅ Ок",
+             "callback_data": f"card:ok:{entity['id']}"},
             {"text": "🗑 Удалить", "callback_data": f"card:del:{entity['id']}"},
         ])
     if not draft.get("auto_approved"):
@@ -404,9 +408,6 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     rows.append([
         {"text": "🤖 Собрать через Claude", "callback_data": f"card:gen:{entity['id']}"},
     ])
-    if problems:
-        rows[-1].append(
-            {"text": "🗑 Удалить", "callback_data": f"card:del:{entity['id']}"})
     notify_owner("\n".join(lines), reply_markup={"inline_keyboard": rows})
 
 

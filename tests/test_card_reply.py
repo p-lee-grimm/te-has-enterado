@@ -137,10 +137,18 @@ class TestReviewButtons:
         data = self._markup(monkeypatch, ["в Википедии не нашлось статьи"])
         assert "card:gen:javier-negre" in data
 
-    def test_no_one_tap_approve_when_unverified(self, monkeypatch):
-        """Утвердить непроверенное одним нажатием нельзя — это и есть защита."""
-        data = self._markup(monkeypatch, ["статья найдена поиском"])
-        assert "card:ok:javier-negre" not in data
+    def test_failed_check_still_offers_approval(self, monkeypatch):
+        """Автоматика решает, что публиковать само; владелец — что вообще.
+
+        Отсутствие кнопки не делало карточку лучше, оно делало её
+        недоступной: сообщение приходит в чат, а сделать с ним нечего.
+        """
+        data = self._markup(monkeypatch, ["личность не сверена с новостями"])
+        assert "card:ok:javier-negre" in data
+
+    def test_delete_offered_once(self, monkeypatch):
+        data = self._markup(monkeypatch, ["личность не сверена с новостями"])
+        assert data.count("card:del:javier-negre") == 1
 
     def test_clean_draft_can_be_approved(self, monkeypatch):
         data = self._markup(monkeypatch, [])
