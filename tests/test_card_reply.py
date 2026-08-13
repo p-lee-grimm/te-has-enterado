@@ -252,3 +252,84 @@ class TestModelCardReview:
                                        "wiki_url": None, "from_model": True})
         data = [b["callback_data"] for r in got["markup"]["inline_keyboard"] for b in r]
         assert "card:ok:javier-negre" in data
+
+
+class TestAutoApprove:
+    """Карточка со статьёй Википедии за спиной идёт в посты сразу."""
+
+    @staticmethod
+    def _try(monkeypatch, draft):
+        import quepasa.cards as cards
+        import quepasa.db as db
+        ran = []
+
+        class Conn:
+            def execute(self, sql, params=None):
+                ran.append((" ".join(sql.split()), params))
+                return type("R", (), {"fetchone": lambda s: None})()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        monkeypatch.setattr(db, "connect", lambda *a, **k: Conn())
+        return cards.approve_if_from_wikipedia("x", draft), ran
+
+    def test_wikipedia_backed_card_is_approved(self, monkeypatch):
+        draft = {"card": "Министр.", "problems": [], "wiki_url": "https://es.wikipedia.org/wiki/X"}
+        ok, ran = self._try(monkeypatch, draft)
+        assert ok is True
+        assert draft["auto_approved"] is True
+        assert any("card_status='approved'" in s for s, _ in ran)
+
+    def test_card_with_problems_still_waits(self, monkeypatch):
+        """Не прошло проверку — решает человек."""
+        draft = {"card": "Министр.", "problems": ["слишком длинно"],
+                 "wiki_url": "https://es.wikipedia.org/wiki/X"}
+        ok, ran = self._try(monkeypatch, draft)
+        assert ok is False and not ran
+
+    def test_model_written_card_still_waits(self, monkeypatch):
+        """Без статьи проверять не с чем — нажатие остаётся."""
+        draft = {"card": "Журналист.", "problems": [], "wiki_url": None,
+                 "from_model": True}
+        ok, _ = self._try(monkeypatch, draft)
+        assert ok is False
+
+    def test_search_resolved_is_a_warning_not_a_blocker(self, monkeypatch):
+        """Однофамилец возможен, поэтому предупреждаем — но не держим."""
+        draft = {"card": "Министр.", "problems": [],
+                 "warnings": ["статья найдена поиском по имени"],
+                 "wiki_url": "https://es.wikipedia.org/wiki/X"}
+        ok, _ = self._try(monkeypatch, draft)
+        assert ok is True
+
+
+class TestAutoApprovedReview:
+    @staticmethod
+    def _sent(monkeypatch, draft):
+        import quepasa.cards as cards
+        import quepasa.telegram as tg
+        got = {}
+        monkeypatch.setattr(tg, "notify_owner",
+                            lambda t, **k: got.update(text=t, markup=k.get("reply_markup")))
+        monkeypatch.setattr(cards, "news_urls_for", lambda e: [])
+        cards.send_for_review({"id": "x", "name_es": "X", "type": "person"}, draft)
+        return got
+
+    def test_says_it_is_already_live(self, monkeypatch):
+        got = self._sent(monkeypatch, {"card": "Министр.", "problems": [],
+                                       "wiki_url": "https://w/x", "auto_approved": True})
+        assert "добавлена в посты" in got["text"]
+
+    def test_offers_removal_not_approval(self, monkeypatch):
+        """Утверждать нечего — карточка уже в постах."""
+        got = self._sent(monkeypatch, {"card": "Министр.", "problems": [],
+                                       "wiki_url": "https://w/x", "auto_approved": True})
+        data = [b["callback_data"] for r in got["markup"]["inline_keyboard"] for b in r]
+        assert "card:del:x" in data and "card:ok:x" not in data
+
+    def test_search_warning_is_shown(self, monkeypatch):
+        got = self._sent(monkeypatch, {
+            "card": "Министр.", "problems": [], "auto_approved": True,
+            "warnings": ["статья найдена поиском по имени"],
+            "wiki_url": "https://w/x"})
+        assert "поиском" in got["text"]

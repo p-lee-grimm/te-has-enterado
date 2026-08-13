@@ -138,16 +138,19 @@ def generate(name: str, wiki_url: str | None = None,
 
     # Статья, найденная поиском, — отдельный риск: карточка получается
     # безупречной по форме и подтверждённой источником, но про другого
-    # человека. Проверка текста этого не ловит, поэтому такую карточку
-    # нельзя утвердить одним нажатием.
+    # человека (так однажды вышла справка про уругвайского однофамильца).
+    # Это предупреждение, а не отказ: карточка публикуется, но владелец
+    # видит, что личность подтверждена только поиском, и ссылку на статью.
+    warnings: list[str] = []
     if article.get("resolved_by") == "search":
-        problems.append(
-            "статья найдена поиском по имени — подтверди, что это тот самый"
+        warnings.append(
+            "статья найдена поиском по имени — проверь, что это тот самый человек"
         )
 
     return {
         "card": card,
         "problems": problems,
+        "warnings": warnings,
         "resolved_by": article.get("resolved_by", "url"),
         "candidates": article.get("candidates", []),
         "wiki_url": article["url"],
@@ -238,6 +241,8 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     problems = draft.get("problems") or []
     if problems:
         head = "⚠️ <b>Карточка не прошла проверку</b>"
+    elif draft.get("auto_approved"):
+        head = "✅ <b>Карточка добавлена в посты</b>"
     elif draft.get("from_model"):
         # источник — знания модели, сверять не с чем; владелец знает и проверит
         head = "🤖 <b>Карточка со слов модели</b>"
@@ -267,6 +272,8 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
             lines.append(f'• <a href="{n["url"]}">{_html.escape(n["title"][:70])}</a>')
     if problems:
         lines += ["", "<b>Проблемы:</b>"] + [f"• {_html.escape(p)}" for p in problems]
+    for w in draft.get("warnings") or []:
+        lines += ["", f"⚠️ <i>{_html.escape(w)}</i>"]
 
     cands = draft.get("candidates") or []
     if len(cands) > 1:
@@ -281,6 +288,9 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
         lines += ["", "<i>Утвердить нельзя, пока не подтверждена личность. "
                       "Пришли реплаем ссылку на статью Википедии или текст "
                       "карточки — или собери через Claude.</i>"]
+    elif draft.get("auto_approved"):
+        lines += ["", "<i>Уже показывается в постах. Ответь реплаем, чтобы "
+                      "переписать, — посты обновятся сами.</i>"]
     else:
         lines += ["", "<i>Ответь реплаем, чтобы заменить текст карточки.</i>"]
 
@@ -290,7 +300,12 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     # помечена, и владелец решил, что правит её сам.
     # Пересборка — не утверждение, поэтому доступна всегда.
     rows = []
-    if not problems:
+    if draft.get("auto_approved"):
+        # утверждать нечего — карточка уже в постах; нужна только отмена
+        rows.append([
+            {"text": "🗑 Убрать из постов", "callback_data": f"card:del:{entity['id']}"},
+        ])
+    elif not problems:
         rows.append([
             {"text": "✅ Ок", "callback_data": f"card:ok:{entity['id']}"},
             {"text": "🗑 Удалить", "callback_data": f"card:del:{entity['id']}"},
@@ -356,11 +371,42 @@ def _regenerate_from_url(entity_id: str, wiki_url: str) -> None:
             (draft["card"], draft["wiki_url"], entity_id),
         )
     log.info("Карточка %s пересобрана по ссылке владельца", entity_id)
+    if approve_if_from_wikipedia(entity_id, draft):
+        _backfill_and_report(entity_id, announce=False)
     send_for_review(dict(e), draft)
 
 
-def _backfill_and_report(entity_id: str) -> None:
-    """Разносит утверждённую карточку по вышедшим постам и отчитывается."""
+def approve_if_from_wikipedia(entity_id: str, draft: dict[str, Any]) -> bool:
+    """Карточка со статьёй Википедии за спиной идёт в посты сразу.
+
+    Ждать нажатия незачем: источник проверяемый, текст сверен с ним, а
+    владелец всё равно получает сообщение и может переписать или убрать.
+    Пока карточка ждала подтверждения, посты выходили без пояснений —
+    а именно ради них всё и делается.
+
+    Не проходит проверку — не утверждаем: тут решает человек.
+    """
+    if not draft.get("wiki_url") or draft.get("problems"):
+        return False
+
+    from .db import connect
+
+    with connect() as conn:
+        conn.execute(
+            "UPDATE entities SET card_status='approved', card_updated_at=now() "
+            "WHERE id=%s", (entity_id,),
+        )
+    draft["auto_approved"] = True
+    log.info("Карточка %s утверждена автоматически: источник — Википедия", entity_id)
+    return True
+
+
+def _backfill_and_report(entity_id: str, announce: bool = True) -> None:
+    """Разносит утверждённую карточку по вышедшим постам.
+
+    announce=False — когда следом всё равно уходит сообщение о самой карточке:
+    два сообщения подряд об одном и том же читать не станут.
+    """
     from .posts import backfill_entity_card
     from .telegram import notify_owner
 
@@ -372,7 +418,7 @@ def _backfill_and_report(entity_id: str) -> None:
                      f"посты не добавилась: {exc}")
         return
 
-    if res.get("edited"):
+    if announce and res.get("edited"):
         parts = [f"Карточка <b>{entity_id}</b> добавлена в {res['edited']} "
                  f"уже вышедших постов."]
         if res.get("skipped_full"):
@@ -434,6 +480,7 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
     двух кнопок в неделю — лишняя движущаяся часть.
     """
     from .db import connect
+    from .posts import refresh_posts_with_entity
     from .telegram import (
         TelegramError, answer_callback, edit_reply_markup, get_updates, notify_owner,
     )
@@ -556,6 +603,8 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
                             "card_updated_at=now() WHERE id=%s",
                             (draft["card"], draft["wiki_url"], entity_id),
                         )
+                    if approve_if_from_wikipedia(entity_id, draft):
+                        _backfill_and_report(entity_id, announce=False)
                 send_for_review(dict(e), draft)
                 stats["generated"] = stats.get("generated", 0) + 1
             continue
@@ -591,6 +640,9 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
                 edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
             if action == "ok":
                 _backfill_and_report(entity_id)
+            elif action == "del":
+                # карточка могла уже висеть в вышедших постах
+                refresh_posts_with_entity(entity_id)
             continue
 
         # Ответ реплаем: либо ссылка на статью — это подтверждение личности,
@@ -624,7 +676,9 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
                 stats["edited"] += 1
                 handled = True
                 log.info("Карточка %s заменена правкой владельца", entity_id)
-                notify_owner(f"Карточка <code>{entity_id}</code> заменена и утверждена.")
+                n = refresh_posts_with_entity(entity_id)
+                notify_owner(f"Карточка <code>{entity_id}</code> заменена."
+                             + (f" Обновлено постов: {n}." if n else ""))
         if not handled and not upd.get("callback_query"):
             unhandled += 1
 

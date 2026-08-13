@@ -868,6 +868,69 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
     return {**stats, "status": "ok"}
 
 
+def refresh_posts_with_entity(entity_id: str) -> int:
+    """Пересобирает посты, которые показывают эту сущность.
+
+    Нужна после правки текста карточки и после удаления: карточка уже висит
+    в вышедших постах, и без пересборки читатель видит старый текст или
+    пояснение к тому, чего больше нет.
+    """
+    from .config import env
+    from .entities import render_cards_html
+
+    with connect() as conn:
+        posts_ = conn.execute(
+            """
+            SELECT * FROM posts
+            WHERE status = 'published' AND message_id IS NOT NULL
+              AND entity_ids ? %s
+            """,
+            (entity_id,),
+        ).fetchall()
+        alive = {r["id"] for r in conn.execute(
+            "SELECT id FROM entities WHERE id = ANY(%s)",
+            ([entity_id],),
+        ).fetchall()}
+
+    if not posts_:
+        return 0
+
+    channel = env("TELEGRAM_CHANNEL_ID", required=True)
+    edited = 0
+    for post in posts_:
+        # удалённую сущность выкидываем из списка: пояснять больше нечего
+        ids = [e for e in (post.get("entity_ids") or [])
+               if e != entity_id or entity_id in alive]
+        with connect() as conn:
+            articles = cluster_articles(conn, post["cluster_id"])
+            cards = [dict(r) for r in conn.execute(
+                "SELECT * FROM entities WHERE id = ANY(%s)", (ids,),
+            ).fetchall()]
+        text = compose_html(
+            post["header_md"], articles, post["category"],
+            one_sided=bool(post.get("one_sided")),
+            significance=post.get("significance") or "",
+            cards_html=render_cards_html(cards), cards=cards,
+            related_md=post.get("related_md") or "", geo_tag=post.get("geo_tag"),
+        )
+        try:
+            edit_message_text(channel, int(post["message_id"]), text)
+        except Exception as exc:  # noqa: BLE001
+            if "not modified" not in str(exc):
+                log.warning("Пост %s не пересобрался: %s", post["id"], exc)
+            continue
+        with connect() as conn:
+            conn.execute(
+                "UPDATE posts SET entity_ids = %s, edited_at = now(), "
+                "edit_count = edit_count + 1 WHERE id = %s",
+                (json.dumps(ids), post["id"]),
+            )
+        edited += 1
+
+    log.info("Карточка %s: пересобрано постов %s", entity_id, edited)
+    return edited
+
+
 def refresh_published(dry_run: bool = True, window_hours: float | None = None
                       ) -> dict[str, Any]:
     """Пересобирает текст вышедших постов под текущие правила рендера.
