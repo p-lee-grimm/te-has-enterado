@@ -368,11 +368,20 @@ class TestNewsCrossCheck:
         )
 
     def test_different_person_is_a_problem(self, monkeypatch):
-        problems = self._check(monkeypatch, {"same": False, "why": "однофамилец"})
+        problems = self._check(monkeypatch, {"verdict": "different", "why": "однофамилец"})
         assert problems and "про другого" in problems[0]
 
     def test_same_person_passes(self, monkeypatch):
-        assert self._check(monkeypatch, {"same": True, "why": "тот же"}) == []
+        assert self._check(monkeypatch, {"verdict": "same", "why": "тот же"}) == []
+
+    def test_unclear_is_not_an_accusation(self, monkeypatch):
+        """Имени нет в новостях — карточка не виновата, но и не подтверждена."""
+        from quepasa.cards import UNVERIFIED
+        assert self._check(monkeypatch, {"verdict": "unclear"}) == [UNVERIFIED]
+
+    def test_unknown_verdict_treated_as_unverified(self, monkeypatch):
+        from quepasa.cards import UNVERIFIED
+        assert self._check(monkeypatch, {"why": "модель ответила не по форме"}) == [UNVERIFIED]
 
     def test_no_news_blocks(self, monkeypatch):
         """Не с чем сверить — значит не сверено, а не «сверено успешно»."""

@@ -20,6 +20,10 @@ log = logging.getLogger(__name__)
 
 MAX_CARD = 200
 
+# Сверка личности не выполнена: имени нет в новостях, либо проверка сорвалась.
+# Не ошибка карточки, но и не подтверждение — публиковать сама она не будет.
+UNVERIFIED = "личность не сверена с новостями"
+
 # Запрещённые формулировки (§7.4). Проверяются регуляркой до всякой модели:
 # дешевле и надёжнее, чем спрашивать.
 FORBIDDEN = [
@@ -120,19 +124,24 @@ def verify_against_news(name: str, card: str, news_text: str,
     связка другая: карточка против новостей, в которых имя встретилось.
     """
     if not news_text.strip():
-        return ["нет новостей для сверки — не с чем сопоставить личность"]
+        return [UNVERIFIED]
 
     user = f"ИМЯ: {name}\n\nСПРАВКА:\n{card}\n\nНОВОСТИ:\n{news_text[:4000]}"
     try:
         data = _llm_json(load_prompt("card_vs_news.md"), user, usage, retries=0)
     except Exception as exc:  # noqa: BLE001
-        # Молча пропустить нельзя: непройденная проверка — это не пройденная
+        # Молча пропустить нельзя: невыполненная проверка — это не пройденная
         log.warning("Сверка карточки с новостями не удалась: %s", exc)
-        return ["сверка с новостями не выполнилась"]
+        return [UNVERIFIED]
 
-    if data.get("same") is False:
+    verdict = (data.get("verdict") or "").strip().lower()
+    if verdict == "different":
         return [f"карточка про другого: {str(data.get('why', ''))[:140]}"]
-    return []
+    if verdict == "same":
+        return []
+    # unclear: имени в новостях нет, сверять не с чем. Это не ошибка карточки,
+    # но и не подтверждение — автопубликации не будет, решает владелец.
+    return [UNVERIFIED]
 
 
 def generate(name: str, wiki_url: str | None = None,
@@ -215,15 +224,18 @@ def news_source_text(conn, name: str, limit: int = 8) -> str:
     72 часа, поэтому берём то, что переживает уборку: заголовок и подводку
     из ленты.
     """
+    # По границам слова, а не подстрокой: ILIKE '%INE%' находит «cine»
+    # и «Medicine», и сверка получает новости, к сущности не относящиеся.
+    pattern = r"\y" + re.escape(name) + r"\y"
     rows = conn.execute(
         """
         SELECT a.title, coalesce(a.summary_feed, '') AS summary, s.name AS source
         FROM articles a JOIN sources s ON s.id = a.source_id
-        WHERE a.title ILIKE %s OR a.summary_feed ILIKE %s OR a.body ILIKE %s
+        WHERE a.title ~* %s OR a.summary_feed ~* %s OR a.body ~* %s
         ORDER BY a.published_at DESC NULLS LAST
         LIMIT %s
         """,
-        (f"%{name}%", f"%{name}%", f"%{name}%", limit),
+        (pattern, pattern, pattern, limit),
     ).fetchall()
     return "\n\n".join(
         f"[{r['source']}] {r['title']}\n{r['summary'][:400]}".strip() for r in rows
