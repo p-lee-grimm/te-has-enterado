@@ -442,3 +442,73 @@ class TestRecheckButton:
                                           "wiki_url": "https://w/x",
                                           "auto_approved": True})
         assert "card:check:mazon" not in data
+
+
+class TestFirstPostLink:
+    """Судить о карточке надо по посту, в котором она появится."""
+
+    ENT = {"id": "mazon", "name_es": "Carlos Mazón", "name_ru": ""}
+
+    @staticmethod
+    def _with_posts(monkeypatch, posts):
+        import quepasa.cards as cards
+
+        class Conn:
+            def execute(self, sql, params=None):
+                return type("R", (), {"fetchall": lambda s: posts})()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        import quepasa.db as db
+        monkeypatch.setattr(db, "connect", lambda *a, **k: Conn())
+        import quepasa.telegram as tg
+        monkeypatch.setattr(tg, "channel_username", lambda: "tehasenterado")
+        return cards.first_post_link
+
+    def test_finds_earliest_post_with_the_name(self, monkeypatch):
+        fn = self._with_posts(monkeypatch, [
+            {"message_id": 10, "header_md": "**Погода в Мадриде**"},
+            {"message_id": 20, "header_md": "**Carlos Mazón выступил в Cortes**"},
+            {"message_id": 30, "header_md": "**Carlos Mazón снова**"},
+        ])
+        link, title = fn(self.ENT)
+        assert link.endswith("/20"), "нужен первый, а не последний"
+        assert "Mazón" in title
+
+    def test_none_when_name_absent(self, monkeypatch):
+        fn = self._with_posts(monkeypatch, [
+            {"message_id": 10, "header_md": "**Погода в Мадриде**"}])
+        assert fn(self.ENT) is None
+
+    def test_no_posts_at_all(self, monkeypatch):
+        assert self._with_posts(monkeypatch, [])(self.ENT) is None
+
+    def test_link_shown_in_review(self, monkeypatch):
+        import quepasa.cards as cards
+        import quepasa.telegram as tg
+        got = {}
+        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: got.update(text=t))
+        monkeypatch.setattr(cards, "news_urls_for", lambda e: [])
+        monkeypatch.setattr(cards, "first_post_link",
+                            lambda e: ("https://t.me/tehasenterado/20", "Заголовок"))
+        cards.send_for_review({"id": "mazon", "name_es": "Carlos Mazón",
+                               "type": "person"},
+                              {"card": "Депутат.", "problems": [], "wiki_url": None})
+        assert "t.me/tehasenterado/20" in got["text"]
+        assert "Наш пост" in got["text"]
+
+    def test_review_survives_lookup_failure(self, monkeypatch):
+        """Украшение не должно ронять само ревью."""
+        import quepasa.cards as cards
+        import quepasa.telegram as tg
+        got = {}
+        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: got.update(text=t))
+        monkeypatch.setattr(cards, "news_urls_for", lambda e: [])
+
+        def boom(e):
+            raise RuntimeError("база недоступна")
+
+        monkeypatch.setattr(cards, "first_post_link", boom)
+        cards.send_for_review({"id": "x", "name_es": "X", "type": "person"},
+                              {"card": "Депутат.", "problems": [], "wiki_url": None})
+        assert "Депутат." in got["text"]

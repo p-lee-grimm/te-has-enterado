@@ -217,6 +217,35 @@ def news_urls_for(entity: dict[str, Any]) -> list[dict[str, str]]:
     return list(row["sample_urls"]) if row and row["sample_urls"] else []
 
 
+def first_post_link(entity: dict[str, Any]) -> tuple[str, str] | None:
+    """Наш пост, где имя встретилось первым: ссылка и заголовок.
+
+    Ссылок на источники недостаточно, чтобы решить судьбу карточки: решать
+    надо, глядя на пост, в котором она появится. Отбор тем же mark_entities,
+    что ставит звёздочку, — иначе «нашли» и «покажем» могут разойтись.
+    """
+    from .db import connect
+    from .entities import mark_entities
+    from .telegram import message_link
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT message_id, header_md FROM posts
+            WHERE status = 'published' AND message_id IS NOT NULL
+            ORDER BY published_at ASC
+            """
+        ).fetchall()
+
+    for r in rows:
+        head = r["header_md"] or ""
+        if mark_entities(head, [entity]) != head:
+            link = message_link(r["message_id"])
+            title = head.split("\n")[0].strip("* ")
+            return (link, title) if link else None
+    return None
+
+
 def news_source_text(conn, name: str, limit: int = 8) -> str:
     """Заголовки и подводки новостей, где встретилось имя.
 
@@ -305,6 +334,17 @@ def send_for_review(entity: dict[str, Any], draft: dict[str, Any]) -> None:
     elif draft.get("from_model"):
         lines.append("<i>Источник — знания модели, не сверено со статьёй. "
                      "Проверь и поправь реплаем, если что-то не так.</i>")
+
+    # Наш пост важнее ссылок на источники: карточка появится именно в нём,
+    # и судить о ней надо по нему.
+    try:
+        ours = first_post_link(entity)
+    except Exception as exc:  # noqa: BLE001 — ревью важнее украшений
+        log.warning("Пост с первым упоминанием %s не нашёлся: %s", entity["id"], exc)
+        ours = None
+    if ours:
+        link, title = ours
+        lines += ["", f'<b>Наш пост:</b> <a href="{link}">{_html.escape(title[:70])}</a>']
 
     # ссылки на новости, где имя встретилось: без них решить, тот ли это
     # человек, невозможно — а именно это и надо решить
