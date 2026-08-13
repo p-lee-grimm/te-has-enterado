@@ -206,7 +206,9 @@ def cmd_backfill(args) -> int:
 
 def cmd_generate(args) -> int:
     """Черновик карточки из Википедии -> в чат ревью с кнопками."""
-    from quepasa.cards import CardError, generate, send_for_review
+    from quepasa.cards import (
+        CardError, generate, news_source_text, send_for_review,
+    )
 
     with connect() as conn:
         e = conn.execute("SELECT * FROM entities WHERE id=%s", (args.id,)).fetchone()
@@ -215,7 +217,10 @@ def cmd_generate(args) -> int:
         return 1
 
     try:
-        draft = generate(e["name_es"], e["wiki_url_es"], args.context or "")
+        with connect() as conn:
+            news = news_source_text(conn, e["name_es"])
+        draft = generate(e["name_es"], e["wiki_url_es"], args.context or "",
+                         news_text=news)
     except CardError as exc:
         console.print(f"[red]{exc}[/]")
         return 1

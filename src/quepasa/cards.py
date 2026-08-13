@@ -110,8 +110,33 @@ def verify_against_source(card: str, source_text: str, usage: LLMUsage) -> list[
     return []
 
 
+def verify_against_news(name: str, card: str, news_text: str,
+                        usage: LLMUsage) -> list[str]:
+    """Про того ли человека справка, что и новость.
+
+    Сверка с самим источником этого не ловит: карточка про колумбийского
+    политика Luis Carlos Galán безупречно следует из своей статьи — просто
+    новость была про задержанного в Tauste однофамильца. Проверяемая тут
+    связка другая: карточка против новостей, в которых имя встретилось.
+    """
+    if not news_text.strip():
+        return ["нет новостей для сверки — не с чем сопоставить личность"]
+
+    user = f"ИМЯ: {name}\n\nСПРАВКА:\n{card}\n\nНОВОСТИ:\n{news_text[:4000]}"
+    try:
+        data = _llm_json(load_prompt("card_vs_news.md"), user, usage, retries=0)
+    except Exception as exc:  # noqa: BLE001
+        # Молча пропустить нельзя: непройденная проверка — это не пройденная
+        log.warning("Сверка карточки с новостями не удалась: %s", exc)
+        return ["сверка с новостями не выполнилась"]
+
+    if data.get("same") is False:
+        return [f"карточка про другого: {str(data.get('why', ''))[:140]}"]
+    return []
+
+
 def generate(name: str, wiki_url: str | None = None,
-             context: str = "") -> dict[str, Any]:
+             context: str = "", news_text: str = "") -> dict[str, Any]:
     """Черновик карточки из Википедии.
 
     Возвращает {card, problems, wiki_url, source_text, cost_usd}. Карточка
@@ -135,6 +160,8 @@ def generate(name: str, wiki_url: str | None = None,
     problems = validate(card, article["extract"])
     if not problems:
         problems = verify_against_source(card, article["extract"], usage)
+    if not problems:
+        problems = verify_against_news(name, card, news_text, usage)
 
     # Статья, найденная поиском, — отдельный риск: карточка получается
     # безупречной по форме и подтверждённой источником, но про другого
@@ -223,9 +250,13 @@ def generate_from_knowledge(name: str, hint_text: str = "") -> dict[str, Any]:
     if not card:
         raise CardError("модель не уверена, кто это — нужен текст карточки от тебя")
 
-    # Проверяем только форму: длина и запрещённые обороты. Сверять с текстом
-    # новостей нельзя — модель писала не по ним, и верные факты отсеялись бы.
+    # Проверяем форму: длина и запрещённые обороты. Сверять содержание
+    # с текстом новостей нельзя — модель писала не по ним, и верные факты
+    # отсеялись бы. А вот «тот ли это человек» проверить обязательно:
+    # однофамильцев модель путает не реже, чем поиск.
     problems = validate(card, "")
+    if not problems:
+        problems = verify_against_news(name, card, hint_text, usage)
     return {"card": card, "problems": problems, "wiki_url": None,
             "from_model": True, "cost_usd": usage.cost_usd}
 
@@ -351,14 +382,15 @@ def _regenerate_from_url(entity_id: str, wiki_url: str) -> None:
         e = conn.execute(
             "SELECT * FROM entities WHERE id = %s", (entity_id,)
         ).fetchone()
-    if e is None:
-        notify_owner(f"Сущности <code>{entity_id}</code> уже нет.")
-        return
+        if e is None:
+            notify_owner(f"Сущности <code>{entity_id}</code> уже нет.")
+            return
+        news = news_source_text(conn, e["name_es"])
 
     # Не только CardError: Википедия отвечает и 403, и 429, и это прилетает
     # TransientError. Одна недоступная статья не должна ронять разбор нажатий.
     try:
-        draft = generate(e["name_es"], wiki_url)
+        draft = generate(e["name_es"], wiki_url, news_text=news)
     except Exception as exc:  # noqa: BLE001
         log.warning("Карточка %s по ссылке не собралась: %s", entity_id, exc)
         notify_owner(f"По этой ссылке карточка не собралась: {exc}")
@@ -589,8 +621,10 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
                     e = conn.execute(
                         "SELECT * FROM entities WHERE id = %s", (entity_id,)
                     ).fetchone()
+                    news = news_source_text(conn, e["name_es"])
                 try:
-                    draft = generate(e["name_es"], e["wiki_url_es"] or None, context)
+                    draft = generate(e["name_es"], e["wiki_url_es"] or None, context,
+                                     news_text=news)
                 except CardError as exc:
                     # без статьи карточки нет, но сущность уже заведена:
                     # показываем её с причиной, текст можно прислать реплаем
@@ -749,8 +783,10 @@ def refresh_stale(dry_run: bool = True, limit: int = 10) -> dict[str, int]:
         if dry_run:
             log.info("DRY-RUN: перегенерировали бы карточку %s", e["id"])
             continue
+        with connect() as conn:
+            news = news_source_text(conn, e["name_es"])
         try:
-            draft = generate(e["name_es"], e["wiki_url_es"])
+            draft = generate(e["name_es"], e["wiki_url_es"], news_text=news)
         except CardError as exc:
             log.warning("Карточка %s не перегенерировалась: %s", e["id"], exc)
             stats["failed"] += 1

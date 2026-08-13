@@ -193,7 +193,10 @@ class TestCardFromModel:
 
         monkeypatch.setattr(cards, "_llm_json", fake_llm)
         monkeypatch.setattr(cards, "verify_against_source",
-                            lambda *a: ["сверка не должна вызываться"])
+                            lambda *a: ["сверка с текстом не должна вызываться"])
+        # сверка личности с новостями остаётся — путаница однофамильцев
+        # у модели не реже, чем у поиска
+        monkeypatch.setattr(cards, "verify_against_news", lambda *a: [])
         return cards.generate_from_knowledge("Javier Negre", hint), seen
 
     def test_card_from_model_is_marked(self, monkeypatch):
@@ -202,9 +205,19 @@ class TestCardFromModel:
         assert draft["problems"] == []
 
     def test_no_source_verification(self, monkeypatch):
-        """Сверять не с чем: модель писала по памяти, а не по тексту."""
+        """Сверять текст не с чем: модель писала по памяти."""
         draft, _ = self._gen(monkeypatch, "Журналист.")
         assert draft["problems"] == [], "сверка с источником здесь неприменима"
+
+    def test_identity_is_still_checked(self, monkeypatch):
+        """А вот «тот ли это человек» проверяется и здесь."""
+        import quepasa.cards as cards
+        monkeypatch.setattr(cards, "_llm_json",
+                            lambda *a, **k: {"card": "Колумбийский политик."})
+        monkeypatch.setattr(cards, "verify_against_news",
+                            lambda *a: ["карточка про другого: однофамилец"])
+        draft = cards.generate_from_knowledge("Luis Carlos", "[ABC] Задержан в Tauste")
+        assert draft["problems"], "несовпадение личности должно блокировать"
 
     def test_news_go_in_as_identification_only(self, monkeypatch):
         _, seen = self._gen(monkeypatch, "Журналист.", hint="[ABC] Negre y el Rey")
@@ -333,3 +346,55 @@ class TestAutoApprovedReview:
             "warnings": ["статья найдена поиском по имени"],
             "wiki_url": "https://w/x"})
         assert "поиском" in got["text"]
+
+
+class TestNewsCrossCheck:
+    """Карточка сверяется с новостью, а не только со своим источником.
+
+    Живой случай: пост про задержанного в Tauste Luis Carlos получил справку
+    «Колумбийский политик, убитый в 1989» — из статьи «Asesinato de Luis
+    Carlos Galán». Со своим источником карточка сходилась безупречно.
+    """
+
+    @staticmethod
+    def _check(monkeypatch, answer):
+        import quepasa.cards as cards
+        from quepasa.llm import LLMUsage
+        monkeypatch.setattr(cards, "_llm_json", lambda *a, **k: answer)
+        return cards.verify_against_news(
+            "Luis Carlos", "Колумбийский политик, убитый в 1989.",
+            "[Heraldo] Задержаны двое по делу об убийстве пары в Tauste",
+            LLMUsage(),
+        )
+
+    def test_different_person_is_a_problem(self, monkeypatch):
+        problems = self._check(monkeypatch, {"same": False, "why": "однофамилец"})
+        assert problems and "про другого" in problems[0]
+
+    def test_same_person_passes(self, monkeypatch):
+        assert self._check(monkeypatch, {"same": True, "why": "тот же"}) == []
+
+    def test_no_news_blocks(self, monkeypatch):
+        """Не с чем сверить — значит не сверено, а не «сверено успешно»."""
+        import quepasa.cards as cards
+        from quepasa.llm import LLMUsage
+        problems = cards.verify_against_news("X", "Справка.", "", LLMUsage())
+        assert problems
+
+    def test_failed_check_blocks(self, monkeypatch):
+        """Упавшая проверка — не пройденная проверка."""
+        import quepasa.cards as cards
+        from quepasa.llm import LLMUsage
+
+        def boom(*a, **k):
+            raise RuntimeError("нет связи")
+
+        monkeypatch.setattr(cards, "_llm_json", boom)
+        problems = cards.verify_against_news("X", "Справка.", "новости", LLMUsage())
+        assert problems, "иначе сбой сети открывает дорогу любой карточке"
+
+    def test_blocked_card_cannot_auto_approve(self, monkeypatch):
+        import quepasa.cards as cards
+        draft = {"card": "Колумбийский политик.", "wiki_url": "https://w/x",
+                 "problems": ["карточка про другого: однофамилец"]}
+        assert cards.approve_if_from_wikipedia("luis-carlos", draft) is False
