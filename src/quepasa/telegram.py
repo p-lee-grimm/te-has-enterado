@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -19,13 +20,37 @@ class TelegramError(RuntimeError):
     pass
 
 
+# Пауз ждём столько, сколько скажет Telegram, но не бесконечно: правка
+# сорока постов подряд упирается в лимит регулярно, а зависший на десять
+# минут прогон хуже, чем недоправленный пост.
+MAX_RETRY_WAIT = 60
+RETRIES_ON_LIMIT = 2
+
+
 def _call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Вызов метода API. На 429 ждёт столько, сколько просит Telegram.
+
+    Без этого массовая правка теряет посты пачками: лимит на редактирование
+    в канале выбирается за пару десятков сообщений, и весь остаток прогона
+    получает «Too Many Requests».
+    """
     token = env("TELEGRAM_BOT_TOKEN", required=True)
-    resp = httpx.post(f"{API}/bot{token}/{method}", json=payload, timeout=60)
-    data = resp.json() if resp.content else {}
-    if not data.get("ok"):
+
+    for attempt in range(RETRIES_ON_LIMIT + 1):
+        resp = httpx.post(f"{API}/bot{token}/{method}", json=payload, timeout=60)
+        data = resp.json() if resp.content else {}
+        if data.get("ok"):
+            return data["result"]
+
+        wait = int((data.get("parameters") or {}).get("retry_after", 0))
+        if wait and attempt < RETRIES_ON_LIMIT and wait <= MAX_RETRY_WAIT:
+            log.info("%s: лимит Telegram, жду %s с", method, wait)
+            time.sleep(wait + 1)
+            continue
+
         raise TelegramError(f"{method}: {data.get('description', resp.text[:200])}")
-    return data["result"]
+
+    raise TelegramError(f"{method}: лимит не отпустил за {RETRIES_ON_LIMIT} попытки")
 
 
 def send_message(

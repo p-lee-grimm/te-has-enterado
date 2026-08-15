@@ -382,3 +382,57 @@ class TestRestoreLatinNames:
             ("Суд в Севилье", ["Juicio en Sevilla"]),
         ]:
             assert restore_latin_names(text, titles) == text
+
+
+class TestTelegramRateLimit:
+    """Массовая правка упирается в лимит канала — это штатный ответ, не сбой."""
+
+    @staticmethod
+    def _fake_post(responses):
+        calls = {"n": 0}
+
+        def post(url, json=None, timeout=None):
+            r = responses[min(calls["n"], len(responses) - 1)]
+            calls["n"] += 1
+            return type("R", (), {"json": lambda s: r, "content": b"x", "text": ""})()
+
+        return post, calls
+
+    def test_waits_and_retries(self, monkeypatch):
+        import quepasa.telegram as tg
+        post, calls = self._fake_post([
+            {"ok": False, "description": "Too Many Requests: retry after 2",
+             "parameters": {"retry_after": 2}},
+            {"ok": True, "result": {"message_id": 5}},
+        ])
+        monkeypatch.setattr(tg.httpx, "post", post)
+        monkeypatch.setattr(tg.time, "sleep", lambda s: None)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+        assert tg._call("editMessageText", {})["message_id"] == 5
+        assert calls["n"] == 2, "должна быть повторная попытка"
+
+    def test_long_wait_is_not_honoured(self, monkeypatch):
+        """Ждать десять минут хуже, чем оставить пост неправленым."""
+        import pytest
+
+        import quepasa.telegram as tg
+        post, _ = self._fake_post([
+            {"ok": False, "description": "Too Many Requests: retry after 600",
+             "parameters": {"retry_after": 600}}])
+        monkeypatch.setattr(tg.httpx, "post", post)
+        monkeypatch.setattr(tg.time, "sleep", lambda s: None)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+        with pytest.raises(tg.TelegramError):
+            tg._call("editMessageText", {})
+
+    def test_other_errors_are_not_retried(self, monkeypatch):
+        import pytest
+
+        import quepasa.telegram as tg
+        post, calls = self._fake_post([
+            {"ok": False, "description": "Bad Request: message is not modified"}])
+        monkeypatch.setattr(tg.httpx, "post", post)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+        with pytest.raises(tg.TelegramError):
+            tg._call("editMessageText", {})
+        assert calls["n"] == 1, "повтор осмыслен только для лимита"
