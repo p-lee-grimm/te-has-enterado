@@ -49,32 +49,46 @@ def load_corpus(days: int, limit: int):
 def cluster_offline(rows, threshold: float, window_hours: int):
     """Тот же алгоритм, что в стадии cluster, но в памяти и без записи.
 
-    Возвращает список кластеров: {'members': [idx], 'centroid': vec, 'last': ts}.
+    Центроиды держим одной матрицей и сравниваем со статьёй за один
+    матричный умножитель. Наивный цикл по кластерам на корпусе в тысячи
+    статей считает миллиарды пар и не доживает до конца сетки.
+
+    Возвращает список кластеров: {'members': [idx]}.
     """
-    clusters: list[dict] = []
+    n = len(rows)
+    dim = len(rows[0]["embedding"])
+    cent = np.zeros((n, dim), dtype=np.float32)
+    norms = np.ones(n, dtype=np.float32)
+    last = np.full(n, -1e18, dtype=np.float64)
+    members: list[list[int]] = []
+    window = window_hours * 3600.0
+
     for i, row in enumerate(rows):
         vec = np.asarray(row["embedding"], dtype=np.float32)
-        ts = row["published_at"]
+        nv = float(np.linalg.norm(vec)) or 1.0
+        ts = row["published_at"].timestamp()
+        k = len(members)
 
         best_j, best_sim = -1, -1.0
-        for j, cl in enumerate(clusters):
-            if (ts - cl["last"]).total_seconds() > window_hours * 3600:
-                continue
-            c = cl["centroid"]
-            denom = float(np.linalg.norm(c) * np.linalg.norm(vec)) or 1.0
-            sim = float(np.dot(c, vec)) / denom
-            if sim > best_sim:
-                best_j, best_sim = j, sim
+        if k:
+            sims = (cent[:k] @ vec) / (norms[:k] * nv)
+            # окно: кластер, молчавший дольше window, для новой статьи закрыт
+            sims = np.where(ts - last[:k] <= window, sims, -1.0)
+            best_j = int(np.argmax(sims))
+            best_sim = float(sims[best_j])
 
         if best_j >= 0 and best_sim >= threshold:
-            cl = clusters[best_j]
-            cl["members"].append(i)
-            n = len(cl["members"])
-            cl["centroid"] = cl["centroid"] + (vec - cl["centroid"]) / n
-            cl["last"] = max(cl["last"], ts)
+            members[best_j].append(i)
+            cnt = len(members[best_j])
+            cent[best_j] += (vec - cent[best_j]) / cnt
+            norms[best_j] = float(np.linalg.norm(cent[best_j])) or 1.0
+            last[best_j] = max(last[best_j], ts)
         else:
-            clusters.append({"members": [i], "centroid": vec.copy(), "last": ts})
-    return clusters
+            cent[k] = vec
+            norms[k] = nv
+            last[k] = ts
+            members.append([i])
+    return [{"members": m} for m in members]
 
 
 def summarise(rows, clusters, threshold: float) -> dict:
