@@ -20,7 +20,7 @@ import json
 import logging
 import re
 from functools import lru_cache
-from typing import Any
+from typing import Any, Iterable
 
 from .config import env, get_settings
 from .db import connect
@@ -133,6 +133,116 @@ NAME_FIXES = [
     (re.compile(r"\bСьюдаданос\b", re.I), "Ciudadanos"),
     (re.compile(r"\bЭрк\b|\bЭРК\b"), "ERC"),
 ]
+
+
+# Приблизительная испанская транскрипция: нужна не для показа, а для
+# сравнения. «Leire Díez» -> «лейре диес», и кириллическое «Лейре Диез»
+# из заголовка отличается от неё на одну букву.
+_TRANSLIT = [
+    ("ch", "ч"), ("ll", "й"), ("qu", "к"), ("gu", "г"), ("rr", "р"),
+    ("ñ", "нь"), ("á", "а"), ("é", "е"), ("í", "и"), ("ó", "о"), ("ú", "у"),
+    ("ü", "у"), ("à", "а"), ("è", "е"), ("ò", "о"), ("ç", "с"),
+    ("j", "х"), ("h", ""), ("z", "с"), ("v", "в"), ("y", "и"), ("x", "кс"),
+    ("w", "в"), ("c", "к"), ("q", "к"), ("a", "а"), ("b", "б"), ("d", "д"),
+    ("e", "е"), ("f", "ф"), ("g", "г"), ("i", "и"), ("k", "к"), ("l", "л"),
+    ("m", "м"), ("n", "н"), ("o", "о"), ("p", "п"), ("r", "р"), ("s", "с"),
+    ("t", "т"), ("u", "у"),
+]
+
+_LATIN_NAME = re.compile(r"\b[A-ZÁÉÍÓÚÑÜÀÈÒÇ][\wÁÉÍÓÚÑÜáéíóúñüàèòç'’-]+")
+_CYRILLIC_WORD = re.compile(r"[А-ЯЁ][а-яё]+")
+
+# Слова, с которых начинается предложение в испанском заголовке: сами по себе
+# именами не являются и в кандидаты попадать не должны.
+_NOT_NAMES = {
+    "El", "La", "Los", "Las", "Un", "Una", "De", "Del", "En", "Por", "Para",
+    "Con", "Sin", "Sobre", "Tras", "Ante", "Hasta", "Desde", "Que", "Se",
+    "Su", "Sus", "Al", "Y", "O", "No", "Es", "Ha", "Han", "Más", "Este",
+    "Esta", "Estos", "Estas", "Todo", "Toda", "Todos", "Todas", "Primer",
+    "Primera", "Nuevo", "Nueva", "Gobierno", "España", "Madrid", "Barcelona",
+}
+
+
+def _to_cyrillic(name: str) -> str:
+    out = name.casefold()
+    for latin, cyr in _TRANSLIT:
+        out = out.replace(latin, cyr)
+    return re.sub(r"[^а-яё ]", "", out).strip()
+
+
+def _latin_names_in(titles: Iterable[str]) -> list[str]:
+    """Имена собственные из заголовков источников: одно-три слова подряд."""
+    found: list[str] = []
+    for title in titles:
+        words = _LATIN_NAME.findall(title or "")
+        run: list[str] = []
+        for w in words:
+            if w in _NOT_NAMES:
+                run = []
+                continue
+            run.append(w)
+        # склеиваем подряд идущие: «Leire Díez», «Pedro Sánchez»
+        for m in re.finditer(
+            r"(?:[A-ZÁÉÍÓÚÑÜ][\wÁÉÍÓÚÑÜáéíóúñüàèòç'’-]+)"
+            r"(?:\s+(?:de|del|la|y)?\s*[A-ZÁÉÍÓÚÑÜ][\wÁÉÍÓÚÑÜáéíóúñüàèòç'’-]+){0,2}",
+            title or "",
+        ):
+            phrase = m.group(0).strip()
+            parts = phrase.split()
+            while parts and parts[0] in _NOT_NAMES:
+                parts.pop(0)
+            if len(parts) >= 2:
+                found.append(" ".join(parts))
+    return found
+
+
+def restore_latin_names(text: str, titles: Iterable[str]) -> str:
+    """Возвращает транскрибированным именам латиницу из источников.
+
+    Правило «никакой транскрипции» есть в промпте, и всё равно в канал ушли
+    «Лейре Диез», «Кристиану Роналду» и «Араухо». Здесь оно чинится: у нас
+    на руках заголовки источников, где то же имя написано латиницей, —
+    остаётся сопоставить их с кириллицей в нашем тексте.
+
+    Сравнение приблизительное: транскрипция у моделей разная («Роналду» и
+    «Роналдо»), поэтому допускаем пару опечаток на имя.
+    """
+    from .entities import _levenshtein
+
+    out = text or ""
+    if not out:
+        return out
+
+    # Кроме полного имени пробуем одну фамилию: в заголовке часто остаётся
+    # только она — «Араухо покинул Barcelona».
+    variants: list[str] = []
+    for name in dict.fromkeys(_latin_names_in(titles)):
+        variants.append(name)
+        surname = name.split()[-1]
+        # короткие слова не берём: «Vox» или «Ruiz» слишком легко совпадают
+        if len(surname) >= 6:
+            variants.append(surname)
+
+    for name in dict.fromkeys(variants):
+        if name.casefold() in out.casefold():
+            continue  # уже латиницей — трогать нечего
+        target = _to_cyrillic(name)
+        if not target:
+            continue
+        n_words = len(name.split())
+        words = _CYRILLIC_WORD.findall(out)
+        for i in range(len(words) - n_words + 1):
+            window = words[i:i + n_words]
+            got = " ".join(window).casefold()
+            # порог: имя длиной 10 букв переживает две замены, короткое — одну
+            limit = 2 if len(target) >= 8 else 1
+            if _levenshtein(got, target, cap=limit + 1) <= limit:
+                phrase = r"\s+".join(re.escape(w) for w in window)
+                out = re.sub(phrase, name, out)
+                log.info("Имя восстановлено латиницей: %s -> %s",
+                         " ".join(window), name)
+                break
+    return out
 
 
 def fix_names(text: str) -> str:
@@ -481,7 +591,11 @@ def generate_header(cluster_id: int) -> tuple[str, str, dict]:
         # национальная новость гео-тега не получает: он ничего не сужает
         geo_tag = None
 
-    headline, lead = fix_names(headline), fix_names(lead)
+    # Латиница из заголовков источников важнее того, что придумала модель:
+    # правило «никакой транскрипции» она нарушает регулярно.
+    titles = [a["title"] for a in articles]
+    headline = restore_latin_names(fix_names(headline), titles)
+    lead = restore_latin_names(fix_names(lead), titles)
     header_md = f"**{headline}**" + (f"\n\n{lead}" if lead else "")
     return header_md, topic, {
         "provider": provider,

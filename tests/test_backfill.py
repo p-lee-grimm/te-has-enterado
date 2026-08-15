@@ -301,3 +301,67 @@ class TestNameFixes:
         """Границы слова: «Народность» — не партия."""
         from quepasa.posts import fix_names
         assert fix_names("Народность региона") == "Народность региона"
+
+
+class TestRestoreLatinNames:
+    """Транскрибированное имя возвращается к латинице по заголовкам источников.
+
+    Правило «никакой транскрипции» есть в промпте, и всё равно в канал ушли
+    «Лейре Диез», «Кристиану Роналду» и «Араухо». Латиница у нас на руках —
+    в заголовках, откуда сюжет и собран.
+    """
+
+    def test_full_name(self):
+        from quepasa.posts import restore_latin_names
+        out = restore_latin_names(
+            "Судья передал дело о Лейре Диез в Национальный суд",
+            ["El primer juez del caso Leire Díez entrega la investigación"])
+        assert "Leire Díez" in out and "Лейре" not in out
+
+    def test_surname_only(self):
+        """В заголовке часто остаётся одна фамилия."""
+        from quepasa.posts import restore_latin_names
+        out = restore_latin_names("Защитник Араухо покинул клуб",
+                                  ["Ronald Araújo deja el Barcelona"])
+        assert "Araújo" in out
+
+    def test_different_transcription_still_matches(self):
+        """«Роналду» и «Роналдо» — одна и та же ошибка."""
+        from quepasa.posts import restore_latin_names
+        titles = ["Cristiano Ronaldo se casa con Georgina Rodríguez"]
+        assert "Cristiano Ronaldo" in restore_latin_names("Кристиану Роналду женился", titles)
+        assert "Cristiano Ronaldo" in restore_latin_names("Кристиано Роналдо женился", titles)
+
+    def test_geography_stays_russian(self):
+        """Устоявшиеся русские названия трогать нельзя."""
+        from quepasa.posts import restore_latin_names
+        for text, titles in [
+            ("Судья Мадрида принял решение", ["El juez de Madrid decide"]),
+            ("Пожар в Валенсии потушен", ["Incendio en Valencia controlado"]),
+            ("Правительство Испании одобрило", ["El Gobierno de España aprueba"]),
+        ]:
+            assert restore_latin_names(text, titles) == text
+
+    def test_already_latin_untouched(self):
+        from quepasa.posts import restore_latin_names
+        text = "Pedro Sánchez выступил в Congreso"
+        assert restore_latin_names(text, ["Pedro Sánchez comparece"]) == text
+
+    def test_ordinary_russian_untouched(self):
+        from quepasa.posts import restore_latin_names
+        text = "Судья передал дело в Национальный суд"
+        assert restore_latin_names(text, ["El juez entrega el caso"]) == text
+
+    def test_no_titles_no_change(self):
+        from quepasa.posts import restore_latin_names
+        assert restore_latin_names("Лейре Диез", []) == "Лейре Диез"
+
+    def test_empty_text(self):
+        from quepasa.posts import restore_latin_names
+        assert restore_latin_names("", ["Pedro Sánchez"]) == ""
+
+    def test_short_surname_not_guessed(self):
+        """«Ruiz» слишком короткое: совпадёт с чем угодно."""
+        from quepasa.posts import restore_latin_names
+        text = "Руис забил гол"
+        assert restore_latin_names(text, ["Juan Ruiz marca un gol"]) == text
