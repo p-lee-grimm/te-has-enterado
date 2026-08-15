@@ -365,3 +365,20 @@ class TestRestoreLatinNames:
         from quepasa.posts import restore_latin_names
         text = "Руис забил гол"
         assert restore_latin_names(text, ["Juan Ruiz marca un gol"]) == text
+
+    def test_place_via_multiword_candidate(self):
+        """«Sierra de Madrid» давала кандидата «Madrid» в обход списка мест
+        и переписывала «в горах Мадрида»."""
+        from quepasa.posts import restore_latin_names
+        text = "В горах Мадрида потеряли ориентир"
+        assert restore_latin_names(
+            text, ["Desorientados en la Sierra de Madrid"]) == text
+
+    def test_cities_stay_russian(self):
+        from quepasa.posts import restore_latin_names
+        for text, titles in [
+            ("Матч в Барселоне", ["Partido en Barcelona"]),
+            ("Пожар в Валенсии", ["Incendio en Valencia"]),
+            ("Суд в Севилье", ["Juicio en Sevilla"]),
+        ]:
+            assert restore_latin_names(text, titles) == text

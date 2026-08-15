@@ -60,3 +60,15 @@ def resolve(value: str | None) -> str | None:
         return hit
     log.warning("Гео-тег вне словаря, отброшен: %r", raw)
     return None
+
+
+def place_names() -> set[str]:
+    """Все известные названия мест — испанские и русские, нормализованные.
+
+    Нужны не для тегов, а как список исключений: география пишется
+    по-русски, и восстанавливать ей латиницу нельзя.
+    """
+    alias_to_tag, tags = _load()
+    names = set(alias_to_tag)
+    names |= {_norm(t.lstrip("#")) for t in tags}
+    return names

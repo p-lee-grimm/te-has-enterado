@@ -196,6 +196,18 @@ def _latin_names_in(titles: Iterable[str]) -> list[str]:
     return found
 
 
+def _is_place(name: str, places: set[str]) -> bool:
+    """Место или нет. Проверяем и латиницу, и её кириллическую форму.
+
+    В словаре гео-тегов у «#Мадрид» перечислены «Мадрид» и «Comunidad de
+    Madrid», но не голое «Madrid». Транскрипция закрывает это без правки
+    словаря: «Madrid» -> «мадрид», и совпадение находится.
+    """
+    from .geo import _norm
+
+    return _norm(name) in places or _to_cyrillic(name) in places
+
+
 def restore_latin_names(text: str, titles: Iterable[str]) -> str:
     """Возвращает транскрибированным именам латиницу из источников.
 
@@ -215,12 +227,21 @@ def restore_latin_names(text: str, titles: Iterable[str]) -> str:
 
     # Кроме полного имени пробуем одну фамилию: в заголовке часто остаётся
     # только она — «Араухо покинул Barcelona».
+    # География остаётся русской, поэтому места исключаем — и по полному
+    # названию, и по последнему слову: «Sierra de Madrid» дала бы «Madrid»
+    # в обход списка и переписала бы «в горах Мадрида».
+    from .geo import place_names
+
+    places = place_names()
+
     variants: list[str] = []
     for name in dict.fromkeys(_latin_names_in(titles)):
+        if _is_place(name, places):
+            continue
         variants.append(name)
         surname = name.split()[-1]
         # короткие слова не берём: «Vox» или «Ruiz» слишком легко совпадают
-        if len(surname) >= 6:
+        if len(surname) >= 6 and not _is_place(surname, places):
             variants.append(surname)
 
     for name in dict.fromkeys(variants):
