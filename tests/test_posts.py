@@ -212,8 +212,16 @@ class TestLinkCap:
         return out
 
     def test_capped(self):
+        """Потолок работает, когда он задан."""
+        from quepasa.config import get_settings
         from quepasa.posts import pick_links
-        assert len(pick_links(self._many())) == 5
+        s = get_settings()
+        was = s["autopost"]["max_links_per_post"]
+        s["autopost"]["max_links_per_post"] = 5
+        try:
+            assert len(pick_links(self._many())) == 5
+        finally:
+            s["autopost"]["max_links_per_post"] = was
 
     def test_covers_both_flanks(self):
         """Ключевое: в строке обязаны быть и левое, и правое."""
@@ -242,3 +250,42 @@ class TestLinkCap:
         from quepasa.posts import AGENCY_EMOJI, render_links_md
         md = render_links_md(self._many())
         assert AGENCY_EMOJI in md or "EP" not in md
+
+
+class TestNoLinkCap:
+    """Потолок 0 — показываем всех, кто написал."""
+
+    @staticmethod
+    def _arts(n):
+        import datetime as dt
+        leans = ["left", "center-left", "center", "center-right", "right"]
+        return [{"id": i, "source_id": f"s{i}", "source_name": f"Издание{i}",
+                 "lean": leans[i % 5], "type": "press", "owner_group": f"o{i}",
+                 "url": f"https://s{i}.es/a", "url_canonical": f"https://s{i}.es/a",
+                 "published_at": dt.datetime(2026, 8, 16)} for i in range(n)]
+
+    @staticmethod
+    def _with_limit(value, fn):
+        from quepasa.config import get_settings
+        s = get_settings()
+        was = s["autopost"]["max_links_per_post"]
+        s["autopost"]["max_links_per_post"] = value
+        try:
+            return fn()
+        finally:
+            s["autopost"]["max_links_per_post"] = was
+
+    def test_zero_means_all(self):
+        from quepasa.posts import pick_links
+        arts = self._arts(12)
+        assert len(self._with_limit(0, lambda: pick_links(arts))) == 12
+
+    def test_positive_limit_still_caps(self):
+        from quepasa.posts import pick_links
+        arts = self._arts(12)
+        assert len(self._with_limit(3, lambda: pick_links(arts))) == 3
+
+    def test_config_ships_without_cap(self):
+        """Владелец попросил показывать все ссылки."""
+        from quepasa.config import get_settings
+        assert get_settings().get_path("autopost.max_links_per_post") == 0

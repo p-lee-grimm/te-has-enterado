@@ -334,6 +334,8 @@ def pick_links(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from .config import get_settings
     from .spectrum import bucket, lean_value, owner_of
 
+    # 0 — без потолка: показываем всех, кто написал. Список и так ограничен
+    # числом владельцев, а не изданий, и длиннее полутора десятков не бывает.
     limit = int(get_settings().get_path("autopost.max_links_per_post", 5))
 
     usable = [a for a in articles if a.get("url") or a.get("url_canonical")]
@@ -349,7 +351,7 @@ def pick_links(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_owner.values(),
         key=lambda a: (lean_value(a["lean"]) if a.get("type") != "official" else 99) or 0,
     )
-    if len(pool) <= limit:
+    if limit <= 0 or len(pool) <= limit:
         return pool
 
     # Раскладываем по бакетам и берём по кругу. Простой добор «сверху вниз»
