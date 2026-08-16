@@ -99,11 +99,13 @@ class TestBackfillSelection:
             lambda c, e, topic, headline, usage: CTX["oscar-puente"] if context else None)
         return posts_mod.backfill_entity_context("oscar-puente", dry_run=True), conn
 
-    def _post(self, pid=1, entity_ids=None, header="**Óscar Puente и король**"):
+    def _post(self, pid=1, entity_ids=None, header="**Óscar Puente и король**",
+              entity_context=None):
         return {"id": pid, "cluster_id": 10, "message_id": 100 + pid,
                 "header_md": header, "category": "политика",
                 "one_sided": False, "significance": "", "related_md": "",
-                "entity_ids": entity_ids or []}
+                "entity_ids": entity_ids or [],
+                "entity_context": entity_context or {}}
 
     def test_entity_without_pool_is_not_distributed(self, monkeypatch):
         """Нет проверенных фактов — нечего и показывать."""
@@ -125,8 +127,14 @@ class TestBackfillSelection:
         assert res["edited"] == 1
 
     def test_post_with_two_cards_is_left_alone(self, monkeypatch):
-        """Три пояснения превращают пост в справочник."""
-        res, _ = self._run(monkeypatch, CARD, [self._post(entity_ids=["a", "b"])])
+        """Три пояснения превращают пост в справочник.
+
+        Место занято, только если по нему есть что показать: сущность
+        в списке без собранного контекста в блок не попадает.
+        """
+        res, _ = self._run(monkeypatch, CARD, [self._post(
+            entity_ids=["a", "b"],
+            entity_context={"a": {"context": "Раз"}, "b": {"context": "Два"}})])
         assert res["edited"] == 0 and res["skipped_full"] == 1
 
     def test_cap_reported_not_silent(self, monkeypatch, caplog):
@@ -147,8 +155,8 @@ class TestBackfillSelection:
         assert res["checked"] == 0 and res["edited"] == 0
 
     def test_post_already_showing_the_card_is_skipped(self, monkeypatch):
-        res, _ = self._run(monkeypatch, CARD,
-                           [self._post(entity_ids=["oscar-puente"])])
+        res, _ = self._run(monkeypatch, CARD, [self._post(
+            entity_ids=["oscar-puente"], entity_context=CTX)])
         assert res["checked"] == 0
 
     def test_entity_created_after_the_post_is_still_found(self, monkeypatch):
@@ -464,3 +472,50 @@ class TestTelegramRateLimit:
         with pytest.raises(tg.TelegramError):
             tg._call("editMessageText", {})
         assert calls["n"] == 1, "повтор осмыслен только для лимита"
+
+
+class TestStaleListedEntities:
+    """Пост из старой модели: сущность в списке есть, а текста к ней нет.
+
+    После перехода на пул фактов в вышедших постах остался entity_ids, но
+    пояснение жило в карточке, которой больше не существует. Такой пост
+    показывает читателю то, чего уже нигде нет, и держит место под сущность,
+    для которой показать нечего.
+    """
+
+    Conn = TestBackfillSelection.Conn
+
+    def _run(self, monkeypatch, post):
+        import quepasa.facts as facts
+        import quepasa.posts as posts_mod
+        conn = self.Conn(CARD, [post])
+        monkeypatch.setattr(posts_mod, "connect", lambda *a, **k: conn)
+        monkeypatch.setattr(posts_mod, "cluster_articles", lambda c, cid: ART)
+        monkeypatch.setattr(facts, "has_pool", lambda c, eid: True)
+        monkeypatch.setattr(
+            facts, "build_context",
+            lambda c, e, topic, headline, usage: CTX["oscar-puente"])
+        return posts_mod.backfill_entity_context("oscar-puente", dry_run=True)
+
+    def _post(self, entity_ids, entity_context=None):
+        return {"id": 1, "cluster_id": 10, "message_id": 101,
+                "header_md": "**Óscar Puente и король**", "category": "политика",
+                "one_sided": False, "significance": "", "related_md": "",
+                "entity_ids": entity_ids, "entity_context": entity_context or {}}
+
+    def test_entity_listed_but_unexplained_is_refilled(self, monkeypatch):
+        """Главный случай миграции: id в списке остался, текста к нему нет."""
+        res = self._run(monkeypatch, self._post(["oscar-puente"]))
+        assert res["edited"] == 1, "список без текста — это пост без пояснения"
+
+    def test_textless_ids_do_not_hold_the_slots(self, monkeypatch):
+        """Две сущности в списке, показать нечего ни по одной — место свободно."""
+        res = self._run(monkeypatch, self._post(["a", "b"]))
+        assert res["edited"] == 1 and res["skipped_full"] == 0
+
+    def test_still_skips_posts_without_the_name(self, monkeypatch):
+        """Расширение отбора не должно втянуть посты, где имени нет вовсе."""
+        post = self._post(["oscar-puente"])
+        post["header_md"] = "**Погода в Мадриде**"
+        res = self._run(monkeypatch, post)
+        assert res["checked"] == 0

@@ -996,7 +996,7 @@ def backfill_entity_context(entity_id: str, dry_run: bool = True) -> dict[str, A
     Правка сообщения уведомление не шлёт, так что читателя это не беспокоит.
     """
     from .config import env, get_settings
-    from .entities import mark_entities, render_cards_html
+    from .entities import context_text, mark_entities, render_cards_html
     from .facts import build_context
     from .llm import LLMUsage
 
@@ -1037,10 +1037,16 @@ def backfill_entity_context(entity_id: str, dry_run: bool = True) -> dict[str, A
 
     # Отбираем тем же mark_entities, который потом поставит звёздочку: если
     # он текст не меняет, звёздочке взяться неоткуда, и править нечего.
+    #
+    # Условие «сущности ещё нет в посте» проверяется по собранному контексту,
+    # а не по списку entity_ids. После перехода на пул фактов в старых постах
+    # список остался, а текста к нему нет: он жил в карточке, которой больше
+    # не существует. Такой пост показывает читателю пояснение, которого уже
+    # нигде нет, и пересобрать его надо в первую очередь.
     ent_d = dict(ent)
     rows = [
         p for p in published
-        if entity_id not in (p.get("entity_ids") or [])
+        if not context_text(p.get("entity_context"), entity_id)[0]
         and mark_entities(p["header_md"] or "", [ent_d]) != (p["header_md"] or "")
     ]
 
@@ -1056,16 +1062,21 @@ def backfill_entity_context(entity_id: str, dry_run: bool = True) -> dict[str, A
 
     for post in rows:
         current = list(post.get("entity_ids") or [])
-        if len(current) >= max_cards:
+        # Занятым место считается, только если по нему есть что показать:
+        # сущность в списке без собранного контекста в блок не попадает,
+        # и держать под неё место значит оставить пост без пояснений вовсе.
+        filled = [e for e in current
+                  if context_text(post.get("entity_context"), e)[0]]
+        if len(filled) >= max_cards:
             # больше двух пояснений превращают пост в справочник
             stats["skipped_full"] += 1
             continue
+        ids = current if entity_id in current else current + [entity_id]
 
         with connect() as conn:
             articles = cluster_articles(conn, post["cluster_id"])
             saved = conn.execute(
-                "SELECT * FROM entities WHERE id = ANY(%s)",
-                (current + [entity_id],),
+                "SELECT * FROM entities WHERE id = ANY(%s)", (ids,),
             ).fetchall()
             built = build_context(conn, ent_d, post["category"] or "",
                                   (post["header_md"] or "").split("\n")[0], usage)
@@ -1104,7 +1115,7 @@ def backfill_entity_context(entity_id: str, dry_run: bool = True) -> dict[str, A
             conn.execute(
                 "UPDATE posts SET entity_ids = %s, entity_context = %s, "
                 "edited_at = now(), edit_count = edit_count + 1 WHERE id = %s",
-                (json.dumps(current + [entity_id]),
+                (json.dumps(ids),
                  json.dumps(contexts, ensure_ascii=False), post["id"]),
             )
             conn.execute(
