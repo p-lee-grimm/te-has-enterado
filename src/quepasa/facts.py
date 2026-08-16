@@ -461,6 +461,21 @@ def run_extraction(entity: dict[str, Any], source: dict[str, Any], usage: Any,
 # --------------------------------------------------------------- пул
 
 
+def is_self_description(fact: dict[str, Any], names: str) -> bool:
+    """Сущность говорит о себе сама.
+
+    Правило двух полюсов к самоописанию не относится: его условие истинности —
+    «сущность это о себе сказала», а не «источники разных лагерей сошлись».
+    «Называет себя независимым изданием» проверяемо целиком, и ждать чужого
+    подтверждения ему незачем — иначе оно не покажется никогда.
+    """
+    attribution = normalize(fact.get("attribution") or "")
+    if not attribution:
+        return False
+    own = normalize(names)
+    return attribution in own or own in attribution
+
+
 def save_facts(conn, entity_id: str, result: dict[str, Any]) -> list[dict[str, Any]]:
     """Кладёт прошедшие факты в пул.
 
@@ -475,13 +490,22 @@ def save_facts(conn, entity_id: str, result: dict[str, Any]) -> list[dict[str, A
     ttl = int(cfg("legal_ttl_days", 30))
     now = datetime.now(timezone.utc)
 
+    row = conn.execute("SELECT name_es, name_ru FROM entities WHERE id = %s",
+                       (entity_id,)).fetchone()
+    names = f"{row['name_es']} {row['name_ru']}" if row else ""
+
     saved: list[dict[str, Any]] = []
     for f in result["kept"]:
         kind = f["kind"]
         expires = now + timedelta(days=ttl) if kind == "legal" else None
-        # оценка и классификация из прессы ждут подтверждения с другого полюса
-        status = "candidate" if (tier == "press"
-                                 and kind in ("evaluative", "classification")) else "active"
+        # Оценка и классификация из прессы ждут подтверждения с другого полюса:
+        # характеристика от одного лагеря — это его позиция, а не описание
+        # сущности. Самоописание из-под этого правила выведено: ждать, пока
+        # оппонент подтвердит, что издание называет себя независимым, — значит
+        # не показать это никогда.
+        held = (tier == "press" and kind in ("evaluative", "classification")
+                and not is_self_description(f, names))
+        status = "candidate" if held else "active"
         # Повторная проверка того же утверждения продлевает ему срок, а не
         # плодит вторую запись. Отправленное в отставку владельцем не
         # воскресает: `fact retire` — решение человека, и переизвлечение

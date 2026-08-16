@@ -344,3 +344,29 @@ class TestAboutTheEntityItself:
         assert validate_fact(
             fact("Partido Popular — правоцентристская партия", "classification"),
             entity=self.PP) == []
+
+
+class TestSelfDescription:
+    """Самоописание не ждёт подтверждения с другого полюса.
+
+    Правило двух полюсов проверяет, сходятся ли лагеря в характеристике
+    сущности. У самоописания условие истинности другое: сущность это о себе
+    сказала. Ждать, пока оппонент подтвердит, что издание называет себя
+    независимым, — значит не показать этого никогда.
+    """
+
+    def test_own_name_as_attribution_is_self_description(self):
+        from quepasa.facts import is_self_description
+        assert is_self_description({"attribution": "EDATV"}, "EDATV")
+
+    def test_other_outlet_is_not(self):
+        from quepasa.facts import is_self_description
+        assert not is_self_description({"attribution": "El País"}, "EDATV")
+
+    def test_empty_attribution_is_not(self):
+        from quepasa.facts import is_self_description
+        assert not is_self_description({"attribution": ""}, "EDATV")
+
+    def test_case_and_diacritics_ignored(self):
+        from quepasa.facts import is_self_description
+        assert is_self_description({"attribution": "psoe"}, "PSOE Партия")
