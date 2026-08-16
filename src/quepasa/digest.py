@@ -314,14 +314,20 @@ def build(dry_run: bool = True) -> dict[str, Any]:
                      for a in it["articles"]
                  ], ensure_ascii=False)),
             )
-            # сюжет попал в дайджест — отдельным постом он больше не выйдет
+            # Сюжет попал в дайджест — отдельным постом он больше не выйдет.
+            #
+            # Без ON CONFLICT: уникального индекса по cluster_id нет и быть
+            # не должно — повторный пост о развившемся сюжете разрешён
+            # (autopost.repeat_min_hours). ON CONFLICT ссылался на
+            # ограничение из миграции, которого в базе нет, и весь вечерний
+            # прогон падал — уже ПОСЛЕ отправки сообщений в канал.
             conn.execute(
                 """
                 INSERT INTO posts (cluster_id, header_md, category, status)
-                VALUES (%s, %s, %s, 'skipped')
-                ON CONFLICT (cluster_id) DO NOTHING
+                SELECT %s, %s, %s, 'skipped'
+                WHERE NOT EXISTS (SELECT 1 FROM posts WHERE cluster_id = %s)
                 """,
-                (it["cluster_id"], it["headline"], it["topic"]),
+                (it["cluster_id"], it["headline"], it["topic"], it["cluster_id"]),
             )
 
     stats["digest_id"] = digest_id
