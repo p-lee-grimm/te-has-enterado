@@ -48,8 +48,11 @@ def main() -> int:
     ap.add_argument("--purge-bodies", action="store_true", help="затереть просроченные тексты")
     ap.add_argument("--status", action="store_true",
                     help="живо ли всё: свежесть сбора, фиды, очереди")
-    ap.add_argument("--refresh-cards", action="store_true",
-                    help="пометить устаревшие карточки и перегенерировать")
+    ap.add_argument("--refresh-facts", dest="refresh_facts",
+                    action="store_true",
+                    help="снять просроченные факты и перепроверить пул по очереди")
+    ap.add_argument("--audit-facts", dest="audit_facts", action="store_true",
+                    help="выборка фактов недели владельцу на сверку с цитатой")
     ap.add_argument("--check-facts", action="store_true",
                     help="сверить опубликованные посты с текущими источниками")
     ap.add_argument("--process-callbacks", action="store_true",
@@ -108,9 +111,14 @@ def main() -> int:
         print("Всё в порядке." if bad == 0 else f"Требует внимания: {bad}.")
         return 0 if bad == 0 else 1
 
-    if args.refresh_cards:
-        from quepasa.cards import refresh_stale
-        log.info("Карточки: %s", refresh_stale(dry_run=args.dry_run))
+    if args.refresh_facts:
+        from quepasa.factops import refresh_stale
+        log.info("Пул фактов: %s", refresh_stale(dry_run=args.dry_run))
+        return 0
+
+    if args.audit_facts:
+        from quepasa.factops import audit
+        log.info("Аудит фактов: %s", audit(dry_run=args.dry_run))
         return 0
 
     if args.check_facts:
@@ -120,10 +128,10 @@ def main() -> int:
         return 0
 
     if args.process_callbacks:
-        from quepasa.cards import process_callbacks
+        from quepasa.review import process_callbacks
         st = process_callbacks()
-        log.info("Ревью: утверждено %s, удалено %s, правок %s",
-                 st["approved"], st["deleted"], st["edited"])
+        log.info("Ревью: правок %s, снято фактов %s",
+                 st["edited"], st.get("retired", 0))
         return 0
 
     if args.serve_callbacks:
@@ -132,14 +140,14 @@ def main() -> int:
         # опаздывал всегда — владелец видел мёртвую кнопку.
         import time as _time
 
-        from quepasa.cards import process_callbacks
+        from quepasa.review import process_callbacks
         log.info("Слушаю нажатия (долгое ожидание %s с)", args.poll_timeout)
         while True:
             try:
                 st = process_callbacks(timeout=args.poll_timeout)
-                if st["approved"] or st["deleted"] or st["edited"] or st.get("taps"):
-                    log.info("Ревью: утверждено %s, удалено %s, правок %s",
-                             st["approved"], st["deleted"], st["edited"])
+                if st["edited"] or st.get("taps") or st.get("retired"):
+                    log.info("Ревью: правок %s, снято фактов %s, нажатий %s",
+                             st["edited"], st.get("retired", 0), st.get("taps", 0))
             except KeyboardInterrupt:
                 return 0
             except Exception:  # noqa: BLE001 — служба не должна умирать от сбоя

@@ -47,7 +47,10 @@ def collect() -> dict[str, Any]:
         queue = conn.execute(
             """
             SELECT (SELECT count(*) FROM entity_unresolved) AS unresolved,
-                   (SELECT count(*) FROM entities WHERE card_status='draft') AS drafts,
+                   (SELECT count(*) FROM entities e WHERE NOT e.never_explain
+                     AND NOT EXISTS (SELECT 1 FROM entity_facts f
+                                     WHERE f.entity_id = e.id AND f.status='active'))
+                       AS drafts,
                    (SELECT count(*) FROM post_edits WHERE status='pending') AS edits
             """
         ).fetchone()
@@ -111,6 +114,7 @@ def checks(data: dict[str, Any]) -> list[tuple[str, bool, str]]:
     out.append((
         "ждёт твоего решения",
         True,
-        f"сущностей {q['unresolved']}, карточек {q['drafts']}, правок {q['edits']}",
+        f"сущностей {q['unresolved']}, без пула фактов {q['drafts']}, "
+        f"правок {q['edits']}",
     ))
     return out

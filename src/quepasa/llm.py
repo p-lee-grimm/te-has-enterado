@@ -197,6 +197,29 @@ _PROVIDERS = {
 }
 
 
+def json_call(system: str, user: str, usage: LLMUsage, retries: int = 1) -> dict[str, Any]:
+    """Вызов с ретраем на невалидный JSON: модель иногда отвечает прозой.
+
+    Общий для всего, что не пересказ: факты, критик, сборщик, сверка правок.
+    Схему каждый проверяет сам — здесь только гарантия, что вернулся объект.
+    """
+    s = get_settings()
+    provider = s.require("summarize.provider")
+    fn = _PROVIDERS.get(provider)
+    if fn is None:
+        raise LLMError(f"Неизвестный провайдер LLM: {provider}")
+
+    last: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return extract_json(fn(system, user, usage))
+        except (LLMError, ValueError) as exc:
+            last = exc
+            log.warning("Ответ не разобрался (попытка %s): %s", attempt + 1, str(exc)[:160])
+            user += "\n\nВерни СТРОГО один JSON-объект, без пояснений до и после."
+    raise LLMError(f"Модель не вернула JSON: {last}")
+
+
 def summarize_call(system: str, user: str, usage: LLMUsage) -> SummaryOut:
     """Один вызов с одним ретраем при невалидном JSON (§3.8)."""
     s = get_settings()

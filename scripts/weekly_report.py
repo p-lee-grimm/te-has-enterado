@@ -83,14 +83,31 @@ def collect(days: int = DAYS) -> dict:
             (days,),
         ).fetchone()
 
-        entities = conn.execute(
+        facts = conn.execute(
             """
-            SELECT count(*) FILTER (WHERE card_status = 'draft')  AS drafts,
-                   count(*) FILTER (WHERE card_status = 'stale')  AS stale,
-                   count(*) FILTER (WHERE card_status = 'approved') AS approved
-            FROM entities
-            """
+            SELECT count(*) FILTER (WHERE status = 'active') AS active,
+                   count(*) FILTER (WHERE status = 'candidate') AS candidate,
+                   count(*) FILTER (WHERE status = 'retired') AS retired,
+                   count(*) FILTER (WHERE created_at >= now() - make_interval(days => %s))
+                       AS added,
+                   count(*) FILTER (WHERE kind = 'legal' AND status = 'stale')
+                       AS legal_expired
+            FROM entity_facts
+            """,
+            (days,),
         ).fetchone()
+        # Очередь работы владельца, а не порог понимания для читателя:
+        # читатель уже защищён ролью в теле поста, а пул углубляет контекст
+        # для повторяющихся фигур.
+        no_pool = conn.execute(
+            """
+            SELECT e.name_es, e.mentions_count FROM entities e
+            WHERE NOT e.never_explain
+              AND NOT EXISTS (SELECT 1 FROM entity_facts f
+                              WHERE f.entity_id = e.id AND f.status = 'active')
+            ORDER BY e.mentions_count DESC LIMIT 5
+            """
+        ).fetchall()
         unresolved = conn.execute(
             """
             SELECT surface, count FROM entity_unresolved
@@ -110,7 +127,7 @@ def collect(days: int = DAYS) -> dict:
 
     return {
         "by_day": by_day, "feeds": feeds, "top_sources": top_sources,
-        "runs": runs, "digests": digests, "entities": entities,
+        "runs": runs, "digests": digests, "facts": facts, "no_pool": no_pool,
         "unresolved": unresolved, "taps": taps,
     }
 
@@ -161,10 +178,19 @@ def render_report(data: dict, subs: int | None) -> str:
     if float(r["cost"]) > 10:
         lines.append("  ⚠️ на порядок выше ожидаемого — проверь, не зациклилось ли что-то")
 
-    e = data["entities"]
-    lines += ["", "<b>Контекстный слой</b>",
-              f"  карточек утверждено: {e['approved']}, ждут ревью: {e['drafts']}, "
-              f"устарели: {e['stale']}"]
+    e = data["facts"]
+    lines += ["", "<b>Пул фактов</b>",
+              f"  показываются: {e['active']}, добавлено за неделю: {e['added']}, "
+              f"ждут второго полюса: {e['candidate']}, сняты: {e['retired']}"]
+    if int(e["legal_expired"]):
+        lines.append(f"  ⚠️ просрочен процессуальный статус: {e['legal_expired']} — "
+                     f"перепроверка: python run.py --refresh-facts --commit")
+
+    if data["no_pool"]:
+        lines += ["", "<b>Чаще всего упоминаются, а пула нет</b>"]
+        for r in data["no_pool"]:
+            lines.append(f"  {r['name_es']} ×{r['mentions_count']}")
+        lines.append("  <i>Собрать: python manage.py fact extract &lt;id&gt; --commit</i>")
 
     if data["unresolved"]:
         lines += ["", "<b>Очередь неразрешённых сущностей</b>"]

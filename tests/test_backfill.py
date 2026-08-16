@@ -1,9 +1,9 @@
-"""Утверждённая карточка догоняет уже вышедшие посты.
+"""Пояснение догоняет уже вышедшие посты.
 
-Карточка утверждается позже, чем выходит пост: имя попадает в очередь,
+Пул фактов появляется позже, чем выходит пост: имя попадает в очередь,
 владелец разбирает её вечером, а пост с этим именем уже висит в канале без
 пояснения. Со звёздочкой у имени — она ставится тем же compose_html, и
-проверять надо именно её: карточка без метки в тексте незаметна.
+проверять надо именно её: пояснение без метки в тексте незаметно.
 """
 
 from __future__ import annotations
@@ -20,8 +20,10 @@ ART = [{"source_id": "abc", "source_name": "ABC", "lean": "right",
         "url_canonical": "https://abc.es/1", "title": "Puente y el Rey",
         "type": "newspaper"}]
 CARD = {"id": "oscar-puente", "name_es": "Óscar Puente", "name_ru": "",
-        "card": "Министр транспорта Испании.", "card_status": "approved",
-        "never_explain": False}
+        "never_explain": False, "wiki_url_es": None}
+# Собранный под тему поста контекст живёт на посте, а не на сущности.
+CTX = {"oscar-puente": {"context": "Министр транспорта Испании.",
+                        "fact_ids": [1], "url": "https://es.wikipedia.org/wiki/X"}}
 
 
 class TestRenderedPost:
@@ -32,7 +34,7 @@ class TestRenderedPost:
         return compose_html(
             "**Óscar Puente раскритиковал встречу короля с журналистом**",
             ART, "политика",
-            cards_html=render_cards_html(cards), cards=cards,
+            cards_html=render_cards_html(cards, CTX), cards=cards,
         )
 
     def test_card_block_appears(self):
@@ -51,7 +53,7 @@ class TestRenderedPost:
         """Имя в конце жирного заголовка — худший случай для markdown."""
         from quepasa.entities import render_cards_html
         html = compose_html("**Решение принял Óscar Puente**", ART, "политика",
-                            cards_html=render_cards_html([CARD]), cards=[CARD])
+                            cards_html=render_cards_html([CARD], CTX), cards=[CARD])
         assert html.count("<b>") == html.count("</b>")
 
     def test_related_block_survives_reedit(self):
@@ -84,13 +86,18 @@ class TestBackfillSelection:
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
-    def _run(self, monkeypatch, ent, posts):
+    def _run(self, monkeypatch, ent, posts, *, pool=True, context=True):
+        import quepasa.facts as facts
         import quepasa.posts as posts_mod
         conn = self.Conn(ent, posts)
         # connect импортируется в posts на уровне модуля — подменяем там
         monkeypatch.setattr(posts_mod, "connect", lambda *a, **k: conn)
         monkeypatch.setattr(posts_mod, "cluster_articles", lambda c, cid: ART)
-        return posts_mod.backfill_entity_card("oscar-puente", dry_run=True), conn
+        monkeypatch.setattr(facts, "has_pool", lambda c, eid: pool)
+        monkeypatch.setattr(
+            facts, "build_context",
+            lambda c, e, topic, headline, usage: CTX["oscar-puente"] if context else None)
+        return posts_mod.backfill_entity_context("oscar-puente", dry_run=True), conn
 
     def _post(self, pid=1, entity_ids=None, header="**Óscar Puente и король**"):
         return {"id": pid, "cluster_id": 10, "message_id": 100 + pid,
@@ -98,24 +105,27 @@ class TestBackfillSelection:
                 "one_sided": False, "significance": "", "related_md": "",
                 "entity_ids": entity_ids or []}
 
-    def test_unapproved_card_is_not_distributed(self, monkeypatch):
-        """Черновик в канал не уходит — это и есть смысл утверждения."""
-        ent = {**CARD, "card_status": "draft"}
-        res, _ = self._run(monkeypatch, ent, [self._post()])
+    def test_entity_without_pool_is_not_distributed(self, monkeypatch):
+        """Нет проверенных фактов — нечего и показывать."""
+        res, _ = self._run(monkeypatch, CARD, [self._post()], pool=False)
         assert res["status"] == "skip"
         assert res["edited"] == 0
 
-    def test_empty_card_is_not_distributed(self, monkeypatch):
-        ent = {**CARD, "card": "   "}
-        res, _ = self._run(monkeypatch, ent, [self._post()])
-        assert res["status"] == "skip"
+    def test_post_without_matching_facts_is_left_alone(self, monkeypatch):
+        """Пул есть, но под тему этого поста ничего не подошло.
 
-    def test_approved_card_reaches_the_post(self, monkeypatch):
+        Штатный исход: пустое пояснение хуже отсутствующего, а имя читателю
+        уже пояснено ролью в теле поста.
+        """
+        res, _ = self._run(monkeypatch, CARD, [self._post()], context=False)
+        assert res["edited"] == 0 and res["skipped_empty"] == 1
+
+    def test_context_reaches_the_post(self, monkeypatch):
         res, _ = self._run(monkeypatch, CARD, [self._post()])
         assert res["edited"] == 1
 
     def test_post_with_two_cards_is_left_alone(self, monkeypatch):
-        """Три карточки превращают пост в справочник."""
+        """Три пояснения превращают пост в справочник."""
         res, _ = self._run(monkeypatch, CARD, [self._post(entity_ids=["a", "b"])])
         assert res["edited"] == 0 and res["skipped_full"] == 1
 
@@ -145,6 +155,24 @@ class TestBackfillSelection:
         """Главный случай: сущности не было, когда пост выходил."""
         res, _ = self._run(monkeypatch, CARD, [self._post()])
         assert res["edited"] == 1, "запись в entity_mentions тут отсутствует"
+
+    def test_context_is_assembled_per_post(self, monkeypatch):
+        """Тема поста едет в сборщик: один и тот же человек в новости про
+        газету и в новости про стадион описывается разными фактами."""
+        import quepasa.facts as facts
+        import quepasa.posts as posts_mod
+        seen = []
+        conn = self.Conn(CARD, [self._post()])
+        monkeypatch.setattr(posts_mod, "connect", lambda *a, **k: conn)
+        monkeypatch.setattr(posts_mod, "cluster_articles", lambda c, cid: ART)
+        monkeypatch.setattr(facts, "has_pool", lambda c, eid: True)
+        monkeypatch.setattr(
+            facts, "build_context",
+            lambda c, e, topic, headline, usage: seen.append((topic, headline))
+            or CTX["oscar-puente"])
+        posts_mod.backfill_entity_context("oscar-puente", dry_run=True)
+        assert seen and seen[0][0] == "политика"
+        assert "Óscar Puente" in seen[0][1]
 
     def test_never_explain_entity_is_not_distributed(self, monkeypatch):
         """Имена, которые аудитория заведомо знает, объяснять не надо."""
@@ -180,7 +208,7 @@ class TestHashtags:
         """Как и related_md: при правке пересобирается весь текст."""
         from quepasa.entities import render_cards_html
         html = compose_html("**Заголовок**", ART, "политика",
-                            cards_html=render_cards_html([CARD]), cards=[CARD],
+                            cards_html=render_cards_html([CARD], CTX), cards=[CARD],
                             geo_tag="#КастилияИЛеон")
         assert "#КастилияИЛеон" in html
 

@@ -28,6 +28,8 @@ from .markup import markdown_to_telegram_html
 from .entities import (
     mark_shown, notify_new_unresolved, pick_for_display, resolve_all,
 )
+from .facts import contexts_for
+from .llm import LLMUsage
 from .postgate import check_post
 from .related import find_related
 from .telegram import edit_message_text, notify_owner, send_message
@@ -295,6 +297,51 @@ def clean_significance(text: str) -> str:
         log.info("significance отброшен как пересказ: %s", value[:80])
         return ""
     return value
+
+
+def clean_entities(raw: Any) -> list[dict[str, Any]]:
+    """Приводит список сущностей от модели к виду, пригодному для показа.
+
+    Главное здесь — `role_gloss`: это единственный слой контекста, который
+    покрывает 100% сущностей, и он же единственный, который модель пишет
+    свободным текстом. Поэтому его чистим строже прочего: должность и роль
+    разрешены, характеристика — нет. «Скандальный журналист Javier Negre»
+    в теле поста звучит от имени канала, и никакая цитата это не спасает.
+    """
+    from .wordlists import hits, load
+
+    max_words = int(get_settings().get_path("entities.role_gloss_max_words", 6))
+    blocked = load("blocklist.txt")
+
+    out: list[dict[str, Any]] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        surface = (item.get("surface") or "").strip()
+        if not surface:
+            continue
+
+        gloss = " ".join((item.get("role_gloss") or "").split()).strip(" .,;:—–-")
+        if gloss:
+            bad = hits(gloss, blocked)
+            if bad:
+                log.info("role_gloss «%s» отброшен: оценочное «%s»", gloss, bad[0])
+                gloss = ""
+            elif len(gloss.split()) > max_words:
+                # длинная роль — это уже справка, а ей место в пуле фактов
+                log.info("role_gloss «%s» отброшен: %s слов при пределе %s",
+                         gloss, len(gloss.split()), max_words)
+                gloss = ""
+
+        salience = (item.get("salience") or "secondary").strip().lower()
+        out.append({
+            "surface": surface,
+            "type": (item.get("type") or "other").strip().lower(),
+            "salience": salience if salience in ("primary", "secondary") else "secondary",
+            "role_gloss": gloss,
+            "name_ru": (item.get("name_ru") or "").strip(),
+        })
+    return out
 
 
 def hashtag(category: str) -> str:
@@ -626,6 +673,8 @@ def generate_header(cluster_id: int) -> tuple[str, str, dict]:
     headline = restore_latin_names(fix_names(headline), titles)
     lead = restore_latin_names(fix_names(lead), titles)
     header_md = f"**{headline}**" + (f"\n\n{lead}" if lead else "")
+
+    entities = clean_entities(data.get("entities"))
     return header_md, topic, {
         "provider": provider,
         "tokens_in": usage.tokens_in,
@@ -636,7 +685,7 @@ def generate_header(cluster_id: int) -> tuple[str, str, dict]:
         "significance": fix_names(clean_significance(data.get("significance"))),
         "scope": scope,
         "geo_tag": geo_tag,
-        "entities": data.get("entities") or [],
+        "entities": entities,
     }
 
 
@@ -724,16 +773,17 @@ def publish(cluster_id: int, dry_run: bool = True, silent: bool = True,
     from .entities import cards_keyboard, is_measure_day
     from .related import render_link_md
 
-    # В замерный день карточки уходят кнопками, а не цитатой: раскрытие
+    # В замерный день пояснения уходят кнопками, а не цитатой: раскрытие
     # цитаты никак не считается, а тап — считается (§10).
     measure = is_measure_day(datetime.now(ZoneInfo(
         get_settings().require("render.timezone"))))
     related_md = render_link_md(related) if related else ""
+    contexts = post.get("entity_context") or {}
     text = compose_html(
         post["header_md"], articles, post["category"],
         one_sided=bool(post.get("one_sided")),
         significance=post.get("significance") or "",
-        cards_html="" if measure else render_cards_html(cards or []),
+        cards_html="" if measure else render_cards_html(cards or [], contexts),
         cards=cards or [],
         related_md=related_md,
         geo_tag=post.get("geo_tag"),
@@ -886,7 +936,8 @@ def sync_post(cluster_id: int, dry_run: bool = True) -> dict[str, Any]:
         # пометку снимаем, если появился источник с другой стороны
         one_sided=was_one_sided and not one_sided_changed,
         significance=post.get("significance") or "",
-        cards_html=render_cards_html([dict(r) for r in saved]),
+        cards_html=render_cards_html([dict(r) for r in saved],
+                                     post.get("entity_context")),
         cards=[dict(r) for r in saved],
         related_md=post.get("related_md") or "",
         geo_tag=post.get("geo_tag"),
@@ -929,20 +980,25 @@ def sync_post(cluster_id: int, dry_run: bool = True) -> dict[str, Any]:
             "one_sided_lifted": one_sided_changed}
 
 
-def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]:
-    """Добавляет утверждённую карточку в уже вышедшие посты с этим именем.
+def backfill_entity_context(entity_id: str, dry_run: bool = True) -> dict[str, Any]:
+    """Добавляет пояснение в уже вышедшие посты с этим именем.
 
-    Карточка утверждается позже, чем выходит пост: имя попадает в очередь,
+    Пул фактов появляется позже, чем выходит пост: имя попадает в очередь,
     владелец разбирает её вечером, а пост с этим именем уже висит в канале
     без пояснения. Здесь эти посты дособираются — вместе со звёздочкой у
     имени, потому что она ставится тем же compose_html.
 
+    Контекст собирается для каждого поста заново, под его тему: одна и та же
+    фигура в новости про газету и в новости про стадион требует разных фактов
+    из одного пула. Это вызов модели на пост, поэтому и существует
+    `entities.backfill_max_posts`.
+
     Правка сообщения уведомление не шлёт, так что читателя это не беспокоит.
     """
-    from datetime import datetime, timezone
-
     from .config import env, get_settings
     from .entities import mark_entities, render_cards_html
+    from .facts import build_context
+    from .llm import LLMUsage
 
     s = get_settings()
     window = float(s.get_path("entities.backfill_window_hours", 168))
@@ -950,21 +1006,25 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
     max_cards = int(s.get_path("entities.max_cards_per_post", 2))
 
     stats: dict[str, Any] = {"entity_id": entity_id, "checked": 0, "edited": 0,
-                             "skipped_full": 0, "errors": 0, "posts": []}
+                             "skipped_full": 0, "skipped_empty": 0, "errors": 0,
+                             "posts": [], "cost_usd": 0.0}
 
     with connect() as conn:
         ent = conn.execute(
             "SELECT * FROM entities WHERE id = %s", (entity_id,)
         ).fetchone()
-        if ent is None or ent["card_status"] != "approved" or not (ent["card"] or "").strip():
-            return {**stats, "status": "skip", "reason": "карточка не утверждена"}
+        if ent is None:
+            return {**stats, "status": "skip", "reason": "сущности нет"}
         if ent["never_explain"]:
             # имена, которые аудитория заведомо знает, объяснять не надо
             return {**stats, "status": "skip", "reason": "помечено never_explain"}
+        from .facts import has_pool
+        if not has_pool(conn, entity_id):
+            return {**stats, "status": "skip", "reason": "пул фактов пуст"}
 
         # Ищем по тексту поста, а не по entity_mentions: сущности ещё не было,
         # когда пост выходил, поэтому упоминание в ту таблицу не попало —
-        # ровно в этом случае карточка и нужна задним числом.
+        # ровно в этом случае пояснение и нужно задним числом.
         published = conn.execute(
             """
             SELECT * FROM posts
@@ -987,16 +1047,17 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
     stats["checked"] = len(rows)
     if len(rows) > max_posts:
         # молчаливое усечение читается как «обошли всё», поэтому говорим вслух
-        log.info("Карточка %s: постов %s, правим первые %s",
+        log.info("Сущность %s: постов %s, правим первые %s",
                  entity_id, len(rows), max_posts)
         rows = rows[:max_posts]
 
     channel = env("TELEGRAM_CHANNEL_ID", required=True) if not dry_run else ""
+    usage = LLMUsage()
 
     for post in rows:
         current = list(post.get("entity_ids") or [])
         if len(current) >= max_cards:
-            # больше двух карточек превращают пост в справочник
+            # больше двух пояснений превращают пост в справочник
             stats["skipped_full"] += 1
             continue
 
@@ -1006,35 +1067,45 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
                 "SELECT * FROM entities WHERE id = ANY(%s)",
                 (current + [entity_id],),
             ).fetchall()
+            built = build_context(conn, ent_d, post["category"] or "",
+                                  (post["header_md"] or "").split("\n")[0], usage)
+        if not built:
+            # под тему этого поста подходящего факта не нашлось — пропускаем
+            stats["skipped_empty"] += 1
+            continue
+
         cards = [dict(r) for r in saved]
+        contexts = {**(post.get("entity_context") or {}), entity_id: built}
 
         text = compose_html(
             post["header_md"], articles, post["category"],
             one_sided=bool(post.get("one_sided")),
             significance=post.get("significance") or "",
-            cards_html=render_cards_html(cards), cards=cards,
+            cards_html=render_cards_html(cards, contexts), cards=cards,
             related_md=post.get("related_md") or "",
             geo_tag=post.get("geo_tag"),
         )
 
         if dry_run:
-            stats["posts"].append({"post_id": post["id"], "html": text})
+            stats["posts"].append({"post_id": post["id"], "html": text,
+                                   "context": built["context"]})
             stats["edited"] += 1
             continue
 
         try:
             edit_message_text(channel, int(post["message_id"]), text)
         except Exception as exc:  # noqa: BLE001 — один пост не роняет остальные
-            log.warning("Карточка %s: пост %s не поправился: %s",
+            log.warning("Сущность %s: пост %s не поправился: %s",
                         entity_id, post["id"], exc)
             stats["errors"] += 1
             continue
 
         with connect() as conn:
             conn.execute(
-                "UPDATE posts SET entity_ids = %s, edited_at = now(), "
-                "edit_count = edit_count + 1 WHERE id = %s",
-                (json.dumps(current + [entity_id]), post["id"]),
+                "UPDATE posts SET entity_ids = %s, entity_context = %s, "
+                "edited_at = now(), edit_count = edit_count + 1 WHERE id = %s",
+                (json.dumps(current + [entity_id]),
+                 json.dumps(contexts, ensure_ascii=False), post["id"]),
             )
             conn.execute(
                 "UPDATE entity_mentions SET shown = TRUE "
@@ -1047,22 +1118,41 @@ def backfill_entity_card(entity_id: str, dry_run: bool = True) -> dict[str, Any]
         stats["edited"] += 1
         stats["posts"].append({"post_id": post["id"], "message_id": post["message_id"]})
 
+    stats["cost_usd"] = round(usage.cost_usd, 4)
+
     if stats["edited"] or stats["checked"]:
-        log.info("Карточка %s добавлена в %s постов из %s (полных: %s, ошибок: %s)",
+        log.info("Сущность %s: пояснение добавлено в %s постов из %s "
+                 "(полных: %s, без подходящих фактов: %s, ошибок: %s)",
                  entity_id, stats["edited"], stats["checked"],
-                 stats["skipped_full"], stats["errors"])
+                 stats["skipped_full"], stats["skipped_empty"], stats["errors"])
     return {**stats, "status": "ok"}
 
 
-def refresh_posts_with_entity(entity_id: str) -> int:
+def refresh_posts_with_entity(entity_id: str, *, window_hours: float | None = None,
+                              reassemble: bool = False) -> int:
     """Пересобирает посты, которые показывают эту сущность.
 
-    Нужна после правки текста карточки и после удаления: карточка уже висит
-    в вышедших постах, и без пересборки читатель видит старый текст или
-    пояснение к тому, чего больше нет.
+    Нужна после правки факта, после его отставки и после удаления сущности:
+    пояснение уже висит в вышедших постах, и без пересборки читатель видит
+    старый текст или пояснение к тому, чего больше нет.
+
+    `reassemble` зовёт сборщик заново — это нужно, когда изменился сам пул
+    (процессуальный статус, правка факта). По умолчанию текст берётся тот,
+    что уже сохранён на посте: пересобирать одно и то же значит платить
+    за модель и получать каждый раз другую формулировку под тем же
+    сообщением.
+
+    Окно правки существует потому, что дальше пост никто не открывает,
+    а каждая правка — это вызов API.
     """
-    from .config import env
+    from .config import env, get_settings
     from .entities import render_cards_html
+    from .facts import build_context
+    from .llm import LLMUsage
+
+    if window_hours is None:
+        window_hours = float(get_settings().get_path(
+            "entities.backfill_window_hours", 168))
 
     with connect() as conn:
         posts_ = conn.execute(
@@ -1070,8 +1160,9 @@ def refresh_posts_with_entity(entity_id: str) -> int:
             SELECT * FROM posts
             WHERE status = 'published' AND message_id IS NOT NULL
               AND entity_ids ? %s
+              AND published_at >= now() - make_interval(hours => %s)
             """,
-            (entity_id,),
+            (entity_id, int(window_hours)),
         ).fetchall()
         alive = {r["id"] for r in conn.execute(
             "SELECT id FROM entities WHERE id = ANY(%s)",
@@ -1082,21 +1173,35 @@ def refresh_posts_with_entity(entity_id: str) -> int:
         return 0
 
     channel = env("TELEGRAM_CHANNEL_ID", required=True)
+    usage = LLMUsage()
     edited = 0
     for post in posts_:
         # удалённую сущность выкидываем из списка: пояснять больше нечего
         ids = [e for e in (post.get("entity_ids") or [])
                if e != entity_id or entity_id in alive]
+        contexts = {k: v for k, v in (post.get("entity_context") or {}).items()
+                    if k in ids}
+
         with connect() as conn:
             articles = cluster_articles(conn, post["cluster_id"])
             cards = [dict(r) for r in conn.execute(
                 "SELECT * FROM entities WHERE id = ANY(%s)", (ids,),
             ).fetchall()]
+            if reassemble and entity_id in ids:
+                ent = next((c for c in cards if c["id"] == entity_id), None)
+                built = build_context(conn, ent, post["category"] or "",
+                                      (post["header_md"] or "").split("\n")[0],
+                                      usage) if ent else None
+                # факта не осталось — снимаем пояснение, а не показываем старое
+                contexts.pop(entity_id, None)
+                if built:
+                    contexts[entity_id] = built
+
         text = compose_html(
             post["header_md"], articles, post["category"],
             one_sided=bool(post.get("one_sided")),
             significance=post.get("significance") or "",
-            cards_html=render_cards_html(cards), cards=cards,
+            cards_html=render_cards_html(cards, contexts), cards=cards,
             related_md=post.get("related_md") or "", geo_tag=post.get("geo_tag"),
         )
         try:
@@ -1107,13 +1212,14 @@ def refresh_posts_with_entity(entity_id: str) -> int:
             continue
         with connect() as conn:
             conn.execute(
-                "UPDATE posts SET entity_ids = %s, edited_at = now(), "
-                "edit_count = edit_count + 1 WHERE id = %s",
-                (json.dumps(ids), post["id"]),
+                "UPDATE posts SET entity_ids = %s, entity_context = %s, "
+                "edited_at = now(), edit_count = edit_count + 1 WHERE id = %s",
+                (json.dumps(ids), json.dumps(contexts, ensure_ascii=False),
+                 post["id"]),
             )
         edited += 1
 
-    log.info("Карточка %s: пересобрано постов %s", entity_id, edited)
+    log.info("Сущность %s: пересобрано постов %s", entity_id, edited)
     return edited
 
 
@@ -1165,7 +1271,8 @@ def refresh_published(dry_run: bool = True, window_hours: float | None = None
         text = compose_html(
             post["header_md"], articles, post["category"],
             one_sided=bool(post.get("one_sided")), significance=significance,
-            cards_html=render_cards_html(cards), cards=cards,
+            cards_html=render_cards_html(cards, post.get("entity_context")),
+            cards=cards,
             related_md=post.get("related_md") or "",
             geo_tag=post.get("geo_tag"),
         )
@@ -1571,7 +1678,8 @@ def send_post_for_review(cluster_id: int, cards: list[dict[str, Any]] | None = N
         post["header_md"], articles, post["category"],
         one_sided=bool(post.get("one_sided")),
         significance=post.get("significance") or "",
-        cards_html=render_cards_html(cards or []), cards=cards or [],
+        cards_html=render_cards_html(cards or [], post.get("entity_context")),
+        cards=cards or [],
         geo_tag=post.get("geo_tag"),
     )
     notify_owner(
@@ -1678,6 +1786,7 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
             one_sided=row["one_sided"],
             scope=meta.get("scope"),
             geo_tag=meta.get("geo_tag"),
+            entities=meta.get("entities"),
             check_urls=not dry_run,
         )
         if not report.passed:
@@ -1723,12 +1832,21 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
                          one_sided=row["one_sided"],
                          scope=meta.get("scope"), geo_tag=meta.get("geo_tag"),
                          is_continuation=row["is_continuation"])
-            # сущности: матчим и запоминаем, что показали (§7.5)
+            # сущности: матчим, собираем контекст под тему этого поста и
+            # запоминаем, что показали (§7.5). Собранный контекст живёт
+            # на посте: пост дополняется ссылками десятки раз, и звать
+            # сборщик на каждую правку значило бы платить за него десятки
+            # раз и получать каждый раз другой текст.
             resolved = resolve_all(conn, meta.get("entities"), cid)
-            shown = pick_for_display(conn, resolved)
-            conn.execute("UPDATE posts SET entity_ids = %s WHERE cluster_id = %s "
-                         "AND status = 'draft'",
-                         (json.dumps([e["id"] for e in shown]), cid))
+            candidates = pick_for_display(conn, resolved)
+            contexts = contexts_for(conn, candidates, topic,
+                                    meta.get("headline", ""), LLMUsage())
+            shown = [e for e in candidates if e["id"] in contexts]
+            conn.execute(
+                "UPDATE posts SET entity_ids = %s, entity_context = %s "
+                "WHERE cluster_id = %s AND status = 'draft'",
+                (json.dumps([e["id"] for e in shown]),
+                 json.dumps(contexts, ensure_ascii=False), cid))
             loud = would_sound
 
             # «Ранее по теме» — только если пост не уходит реплаем

@@ -74,6 +74,79 @@ def _check_one_sided_line(report: GateReport, one_sided: bool, body_md: str) -> 
     )
 
 
+def _gloss_in_text(gloss: str, text: str) -> bool:
+    """Стоит ли роль в самом тексте, а не только в поле ответа модели.
+
+    Сравниваем по основам: в предложении роль склоняется («критика министра
+    транспорта»), и точного вхождения не будет никогда. Основа в четыре
+    буквы даёт ложные совпадения, но они безопаснее ложных блокировок:
+    пропущенная роль — это один пост без пояснения, а лишняя блокировка —
+    это пост, которого не будет вовсе.
+    """
+    from .wordlists import normalize
+
+    words = [w for w in normalize(gloss).split() if len(w) > 3]
+    if not words:
+        return False
+    body = {w[:4] for w in normalize(text).split()}
+    found = sum(1 for w in words if w[:4] in body)
+    return found * 2 >= len(words)
+
+
+def _check_role_gloss(report: GateReport, entities: list[dict[str, Any]],
+                      body_md: str) -> None:
+    """Имя без пояснения в пост не выходит (§1 спеки пула фактов).
+
+    Порогов по частоте упоминаний не существует: читатель, впервые
+    открывший канал, не должен спотыкаться об имя ни в первый раз,
+    ни в четвёртый. Достаточно любого из двух: роль в теле поста либо
+    пул фактов, из которого соберётся контекст.
+    """
+    if not get_settings().get_path("entities.require_role_gloss", True):
+        report.add("пояснение к именам", True, "проверка выключена в конфиге")
+        return
+
+    primary = [e for e in (entities or []) if e.get("salience") == "primary"]
+    if not primary:
+        report.add("пояснение к именам", True, "главных сущностей нет")
+        return
+
+    bare: list[str] = []
+    for e in primary:
+        if _gloss_in_text(e.get("role_gloss") or "", body_md):
+            continue
+        if _has_pool(e.get("surface") or ""):
+            continue
+        bare.append(e.get("surface") or "?")
+
+    report.add(
+        "пояснение к именам",
+        not bare,
+        f"без роли в тексте и без фактов: {', '.join(bare[:3])}" if bare
+        else f"пояснены все главные ({len(primary)})",
+    )
+
+
+def _has_pool(surface: str) -> bool:
+    """Есть ли у сущности хоть один показываемый факт.
+
+    Ошибка обращения к базе не должна снимать пост с публикации: считаем,
+    что пула нет, — тогда решает role_gloss, а он проверяется по тексту.
+    """
+    from .entities import match
+
+    try:
+        with connect() as conn:
+            entity_id, _ = match(conn, surface)
+            if entity_id is None:
+                return False
+            from .facts import has_pool
+            return has_pool(conn, entity_id)
+    except Exception as exc:  # noqa: BLE001 — ворота не роняем из-за базы
+        log.warning("Пул фактов для «%s» не проверился: %s", surface, exc)
+        return False
+
+
 # Глаголы речи: заголовок с ними сообщает, что разговор состоялся, а не что
 # в нём сказано. «Vivas ответил на заявление министра Марокко о Сеуте» —
 # прочитав это, читатель знает ровно столько же, сколько до заголовка,
@@ -219,6 +292,7 @@ def check_post(
     one_sided: bool = False,
     scope: str | None = None,
     geo_tag: str | None = None,
+    entities: list[dict[str, Any]] | None = None,
     check_urls: bool = True,
 ) -> GateReport:
     """Полная проверка одного поста. Ничего не публикует и не пишет в БД."""
@@ -228,6 +302,7 @@ def check_post(
     _check_scope(report, scope)
     _check_geo_tag(report, geo_tag)
     _check_one_sided_line(report, one_sided, body_md)
+    _check_role_gloss(report, entities or [], body_md)
     _check_fields(report, headline, summary, significance)
     _check_headline_substance(report, headline, summary)
     _check_quotations(report, [headline, summary, significance], articles)

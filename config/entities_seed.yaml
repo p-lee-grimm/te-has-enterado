@@ -2,16 +2,16 @@
 # запрещено, потому что ошибка матчинга даёт дубликат, а дубликаты расходятся
 # в фактах.
 #
-# Карточка отвечает только на «кто это», <= 200 символов вместе с именем.
-# Запрещено (§7.4): числовые рейтинги и места в списках, состояния и
-# капитализация в абсолютных числах, даты назначений (кроме определяющих),
-# оценочные слова, любые утверждения о причастности к преступлениям.
+# Здесь только опознание сущности: id, имя, тип, написания и ссылки на
+# источники. Факты о ней сюда не пишутся — они извлекаются из источников
+# с обязательной цитатой:
+#
+#     python manage.py fact extract --all --commit
 entities:
   - id: pedro-sanchez
     type: person
     name_es: Pedro Sánchez
     name_ru: Педро Санчес
-    card: "Председатель правительства Испании и генеральный секретарь PSOE. Возглавляет коалицию с Sumar, опирающуюся на голоса региональных партий."
     wiki_url_es: https://es.wikipedia.org/wiki/Pedro_S%C3%A1nchez
     aliases: [Sánchez, Sanchez, Санчес, Педро Санчес, Pedro Sanchez]
 
@@ -19,7 +19,6 @@ entities:
     type: person
     name_es: Alberto Núñez Feijóo
     name_ru: Альберто Нуньес Фейхоо
-    card: "Председатель Partido Popular и лидер оппозиции. До перехода в общенациональную политику много лет возглавлял правительство Галисии."
     wiki_url_es: https://es.wikipedia.org/wiki/Alberto_N%C3%BA%C3%B1ez_Feij%C3%B3o
     aliases: [Feijóo, Feijoo, Núñez Feijóo, Фейхоо, Альберто Нуньес Фейхоо]
 
@@ -27,7 +26,6 @@ entities:
     type: person
     name_es: Isabel Díaz Ayuso
     name_ru: Исабель Диас Аюсо
-    card: "Глава правительства Мадридского сообщества от Partido Popular. Заметная фигура правого фланга, часто спорит с центральным правительством."
     wiki_url_es: https://es.wikipedia.org/wiki/Isabel_D%C3%ADaz_Ayuso
     aliases: [Ayuso, Díaz Ayuso, Diaz Ayuso, Аюсо, Исабель Диас Аюсо]
 
@@ -35,7 +33,6 @@ entities:
     type: person
     name_es: Santiago Abascal
     name_ru: Сантьяго Абаскаль
-    card: "Председатель Vox, правой партии, представленной в Congreso de los Diputados и в ряде региональных парламентов."
     wiki_url_es: https://es.wikipedia.org/wiki/Santiago_Abascal
     aliases: [Abascal, Абаскаль, Сантьяго Абаскаль]
 
@@ -43,7 +40,6 @@ entities:
     type: person
     name_es: Carlos Mazón
     name_ru: Карлос Масон
-    card: "Глава правительства Валенсийского сообщества от Partido Popular."
     wiki_url_es: https://es.wikipedia.org/wiki/Carlos_Maz%C3%B3n
     aliases: [Mazón, Mazon, Масон, Мазон, Карлос Масон]
 
@@ -51,7 +47,6 @@ entities:
     type: person
     name_es: Carles Puigdemont
     name_ru: Карлес Пучдемон
-    card: "Лидер Junts, бывший глава правительства Каталонии. После событий вокруг референдума 2017 года много лет находился за пределами Испании."
     wiki_url_es: https://es.wikipedia.org/wiki/Carles_Puigdemont
     aliases: [Puigdemont, Пучдемон, Карлес Пучдемон]
 
@@ -59,7 +54,6 @@ entities:
     type: person
     name_es: Florentino Pérez
     name_ru: Флорентино Перес
-    card: "Председатель совета директоров строительной группы ACS и президент футбольного клуба Real Madrid."
     wiki_url_es: https://es.wikipedia.org/wiki/Florentino_P%C3%A9rez
     aliases: [Florentino Pérez, Florentino Perez, Флорентино Перес, Florentino]
 
@@ -67,7 +61,6 @@ entities:
     type: party
     name_es: Partido Popular
     name_ru: Народная партия
-    card: "Правоцентристская партия, главная сила оппозиции. Правит в большинстве автономных сообществ."
     wiki_url_es: https://es.wikipedia.org/wiki/Partido_Popular
     aliases: [PP, Partido Popular, Народная партия, попьюлары]
 
@@ -75,7 +68,6 @@ entities:
     type: party
     name_es: PSOE
     name_ru: Испанская социалистическая рабочая партия
-    card: "Левоцентристская партия, старейшая из действующих в Испании. Возглавляет нынешнее правительство."
     wiki_url_es: https://es.wikipedia.org/wiki/Partido_Socialista_Obrero_Espa%C3%B1ol
     aliases: [PSOE, социалисты, Partido Socialista Obrero Español]
 
@@ -83,7 +75,6 @@ entities:
     type: party
     name_es: Vox
     name_ru: Вокс
-    card: "Правая партия, третья по числу мест в Congreso de los Diputados. Выступает против децентрализации и миграции."
     wiki_url_es: https://es.wikipedia.org/wiki/Vox_(partido_pol%C3%ADtico)
     aliases: [Vox, Вокс]
 
@@ -91,7 +82,6 @@ entities:
     type: party
     name_es: Sumar
     name_ru: Сумар
-    card: "Левая коалиция, младший партнёр PSOE в правительстве. Объединила несколько партий левее социалистов."
     wiki_url_es: https://es.wikipedia.org/wiki/Sumar_(partido_pol%C3%ADtico)
     aliases: [Sumar, Сумар]
 
@@ -99,7 +89,6 @@ entities:
     type: party
     name_es: Junts
     name_ru: Жунтс
-    card: "Каталонская правоцентристская партия, выступает за независимость Каталонии. Её голоса нужны правительству для принятия законов."
     wiki_url_es: https://es.wikipedia.org/wiki/Junts_per_Catalunya
     aliases: [Junts, Junts per Catalunya, Жунтс, Хунтс]
 
@@ -107,7 +96,6 @@ entities:
     type: party
     name_es: ERC
     name_ru: Левые республиканцы Каталонии
-    card: "Левая каталонская партия, выступает за независимость Каталонии. Долго определяла состав регионального правительства."
     wiki_url_es: https://es.wikipedia.org/wiki/Esquerra_Republicana_de_Catalunya
     aliases: [ERC, Esquerra, Esquerra Republicana, Эскерра]
 
@@ -115,7 +103,6 @@ entities:
     type: party
     name_es: Podemos
     name_ru: Подемос
-    card: "Левая партия, выросшая из протестного движения 15M. Ранее входила в правительство, сейчас действует отдельно от Sumar."
     wiki_url_es: https://es.wikipedia.org/wiki/Podemos
     aliases: [Podemos, Подемос]
 
@@ -123,7 +110,6 @@ entities:
     type: institution
     name_es: Congreso de los Diputados
     name_ru: Конгресс депутатов
-    card: "Нижняя палата парламента Испании, 350 депутатов. Утверждает главу правительства и принимает законы."
     wiki_url_es: https://es.wikipedia.org/wiki/Congreso_de_los_Diputados_(Espa%C3%B1a)
     aliases: [Congreso, Congreso de los Diputados, Конгресс депутатов, нижняя палата]
 
@@ -131,7 +117,6 @@ entities:
     type: institution
     name_es: La Moncloa
     name_ru: Монклоа
-    card: "Резиденция главы правительства Испании в Мадриде. Этим словом обозначают и само правительство."
     wiki_url_es: https://es.wikipedia.org/wiki/Palacio_de_la_Moncloa
     aliases: [Moncloa, La Moncloa, Монклоа]
 
@@ -139,7 +124,6 @@ entities:
     type: institution
     name_es: Tribunal Supremo
     name_ru: Верховный суд
-    card: "Высшая судебная инстанция Испании. Рассматривает дела депутатов, сенаторов и высших должностных лиц."
     wiki_url_es: https://es.wikipedia.org/wiki/Tribunal_Supremo_de_Espa%C3%B1a
     aliases: [Tribunal Supremo, Supremo, Верховный суд]
 
@@ -147,7 +131,6 @@ entities:
     type: institution
     name_es: Banco de España
     name_ru: Банк Испании
-    card: "Центральный банк страны, входит в Евросистему. Надзирает за банками и публикует макроэкономические прогнозы."
     wiki_url_es: https://es.wikipedia.org/wiki/Banco_de_Espa%C3%B1a
     aliases: [Banco de España, Banco de Espana, Банк Испании]
 
@@ -155,7 +138,6 @@ entities:
     type: media
     name_es: El País
     name_ru: Эль Паис
-    card: "Крупнейшая ежедневная газета Испании, левоцентристская. Входит в группу PRISA."
     wiki_url_es: https://es.wikipedia.org/wiki/El_Pa%C3%ADs
     aliases: [El País, El Pais, Эль Паис]
 
@@ -163,7 +145,6 @@ entities:
     type: media
     name_es: ABC
     name_ru: АБЦ
-    card: "Консервативная ежедневная газета, одна из старейших в Испании. Входит в группу Vocento."
     wiki_url_es: https://es.wikipedia.org/wiki/ABC_(peri%C3%B3dico)
     aliases: [ABC, диарио ABC]
 
@@ -171,6 +152,5 @@ entities:
     type: media
     name_es: RTVE
     name_ru: РТВЕ
-    card: "Общественная теле- и радиовещательная корпорация Испании, финансируется из бюджета."
     wiki_url_es: https://es.wikipedia.org/wiki/Radiotelevisi%C3%B3n_Espa%C3%B1ola
     aliases: [RTVE, TVE, РТВЕ]

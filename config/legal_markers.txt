@@ -1,0 +1,31 @@
+# Испанские слова, которыми источник сообщает ИСХОД дела.
+#
+# Нужны для одного правила: если в источнике есть и стадия, и результат,
+# факт обязан содержать результат. Устаревшее «фигурирует в расследовании»
+# про оправданного человека — худшая ошибка в системе, и она возникает
+# ровно так: извлекатель берёт первое попавшееся слово о статусе, а исход
+# стоит абзацем ниже.
+#
+# Сравнение по началу слова на нормализованном тексте источника.
+
+absuelto
+absuelta
+absolucion
+fue absuelto
+quedo absuelto
+archivada la causa
+archivo de la causa
+sobreseido
+sobreseida
+sobreseimiento
+se archiva
+causa archivada
+indultado
+indultada
+indulto
+retirada de cargos
+retiro los cargos
+exculpado
+exculpada
+declarado inocente
+sin cargos

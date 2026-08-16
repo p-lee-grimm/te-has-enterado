@@ -25,7 +25,7 @@ UPDATED_PREFIX = "Обновлено:"
 
 
 def _diff_call(published_md: str, titles: list[str], usage: LLMUsage) -> dict[str, Any]:
-    from .cards import _llm_json
+    from .llm import json_call as _llm_json
 
     user = (
         f"НАШ ОПУБЛИКОВАННЫЙ ПОСТ:\n{published_md}\n\n"
@@ -136,7 +136,7 @@ def apply_edit(conn, edit_id: int) -> bool:
     row = conn.execute(
         """
         SELECT e.*, p.cluster_id, p.message_id, p.category, p.significance,
-               p.one_sided, p.entity_ids, p.geo_tag, p.related_md
+               p.one_sided, p.entity_ids, p.entity_context, p.geo_tag, p.related_md
         FROM post_edits e JOIN posts p ON p.id = e.post_id
         WHERE e.id = %s AND e.status = 'pending'
         """,
@@ -161,7 +161,7 @@ def apply_edit(conn, edit_id: int) -> bool:
         header, articles, row["category"],
         one_sided=bool(row["one_sided"]),
         significance=row["significance"] or "",
-        cards_html=render_cards_html(cards), cards=cards,
+        cards_html=render_cards_html(cards, row["entity_context"]), cards=cards,
         related_md=row["related_md"] or "", geo_tag=row["geo_tag"],
     )
     edit_message_text(env("TELEGRAM_CHANNEL_ID"), int(row["message_id"]), text)

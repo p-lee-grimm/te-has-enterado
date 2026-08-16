@@ -39,17 +39,26 @@ class TestNormalize:
         assert normalize("   ") == ""
 
 
-def ent(eid, *, status="approved", never=False, mentions=0, salience="secondary",
-        last=None, card="Карточка"):
-    return {"id": eid, "name_es": eid, "card": card, "card_status": status,
+def ent(eid, *, never=False, mentions=0, salience="secondary", last=None):
+    return {"id": eid, "name_es": eid, "name_ru": "", "wiki_url_es": None,
             "never_explain": never, "mentions_count": mentions,
             "salience": salience, "last_explained_at": last}
 
 
+def ctx(*ids, text="Пояснение"):
+    """Собранный контекст живёт на посте, а не на сущности."""
+    return {i: {"context": text, "fact_ids": [1], "url": ""} for i in ids}
+
+
 class FakeConn:
-    """Кулдаун считается в SQL — подменяем ответ."""
-    def __init__(self, days=999): self.days = days
+    """Кулдаун и наличие пула считаются в SQL — подменяем ответ."""
+    def __init__(self, days=999, pool=True):
+        self.days, self.pool = days, pool
+
     def execute(self, sql, params=None):
+        if "entity_facts" in sql:
+            pool = self.pool
+            return type("R", (), {"fetchone": lambda s: 1 if pool else None})()
         return type("R", (), {"fetchone": lambda s: {"d": self.days}})()
 
 
@@ -58,14 +67,12 @@ class TestDisplayRules:
         ents = [ent(f"e{i}") for i in range(5)]
         assert len(pick_for_display(FakeConn(), ents)) == 2
 
-    def test_draft_not_shown(self):
-        assert pick_for_display(FakeConn(), [ent("a", status="draft")]) == []
+    def test_entity_without_pool_not_shown(self):
+        """Нет проверенных фактов — собирать нечего."""
+        assert pick_for_display(FakeConn(pool=False), [ent("a")]) == []
 
     def test_never_explain_respected(self):
         assert pick_for_display(FakeConn(), [ent("a", never=True)]) == []
-
-    def test_empty_card_not_shown(self):
-        assert pick_for_display(FakeConn(), [ent("a", card="  ")]) == []
 
     def test_cooldown_blocks_recent(self):
         import datetime
@@ -89,14 +96,14 @@ class TestDisplayRules:
 
 class TestCardRender:
     def test_expandable_blockquote(self):
-        html = render_cards_html([ent("x", card="Кто-то важный")])
+        html = render_cards_html([ent("x")], ctx("x", text="Кто-то важный"))
         assert html.startswith("<blockquote expandable>")
         assert "Кто-то важный" in html
 
     def test_no_service_header(self):
         """Заголовка нет: в свёрнутом виде видна первая строка, и это должно
         быть пояснение, а не служебная подпись."""
-        html = render_cards_html([ent("x", card="Пояснение")])
+        html = render_cards_html([ent("x")], ctx("x"))
         assert "Кто это" not in html and "Что это" not in html
         assert html.startswith("<blockquote expandable><b>")
 
@@ -104,8 +111,20 @@ class TestCardRender:
         """Пустой блок недопустим."""
         assert render_cards_html([]) == ""
 
+    def test_entity_without_context_is_skipped(self):
+        """Сборка могла не получиться — тогда сущности в блоке нет вовсе."""
+        assert render_cards_html([ent("x")], {}) == ""
+
+    def test_source_link_points_at_the_facts(self):
+        """Тексты Википедии под CC BY-SA: ссылка ведёт туда, откуда взято
+        показанное, а не в общую статью о сущности."""
+        contexts = {"x": {"context": "Пояснение", "fact_ids": [1],
+                          "url": "https://es.wikipedia.org/wiki/ACS"}}
+        html = render_cards_html([ent("x")], contexts)
+        assert 'href="https://es.wikipedia.org/wiki/ACS"' in html
+
     def test_html_escaped(self):
-        html = render_cards_html([ent("x", card="A & <b>B</b>")])
+        html = render_cards_html([ent("x")], ctx("x", text="A & <b>B</b>"))
         assert "&amp;" in html and "&lt;b&gt;" in html
 
 
@@ -480,8 +499,9 @@ class TestCardNameDuplication:
 
     def test_rendered_card_has_name_once(self):
         from quepasa.entities import render_cards_html
-        html = render_cards_html([{
-            "id": "x", "name_es": "Margarita Robles", "name_ru": "",
-            "card": "Margarita Robles — министр обороны.", "wiki_url_es": None,
-        }])
+        html = render_cards_html(
+            [{"id": "x", "name_es": "Margarita Robles", "name_ru": "",
+              "wiki_url_es": None}],
+            {"x": {"context": "Margarita Robles — министр обороны."}},
+        )
         assert html.count("Margarita Robles") == 1

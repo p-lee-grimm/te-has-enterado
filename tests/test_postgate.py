@@ -191,3 +191,79 @@ class TestHeadlineSubstance:
     def test_other_speech_verbs_caught(self):
         assert not self._ok("Правительство прокомментировало ситуацию с поездами")
         assert not self._ok("Мадрид отреагировал на решение суда")
+
+
+class TestRoleGloss:
+    """Имя без пояснения в пост не выходит.
+
+    Порогов по частоте упоминаний не существует: читатель, впервые открывший
+    канал, не должен спотыкаться об имя ни в первый раз, ни в четвёртый.
+    """
+
+    BODY = ("**Министр транспорта Óscar Puente раскритиковал встречу короля "
+            "с журналистом Javier Negre**")
+
+    @staticmethod
+    def _check(monkeypatch, entities, body, pool=False):
+        from quepasa.postgate import _check_role_gloss
+        import quepasa.postgate as pg
+
+        monkeypatch.setattr(pg, "_has_pool", lambda surface: pool)
+        r = GateReport()
+        _check_role_gloss(r, entities, body)
+        return r
+
+    def test_role_in_the_text_passes(self, monkeypatch):
+        r = self._check(monkeypatch, [
+            {"surface": "Óscar Puente", "salience": "primary",
+             "role_gloss": "министр транспорта"}], self.BODY)
+        assert r.passed, r.reason()
+
+    def test_declined_role_still_counts(self, monkeypatch):
+        """В предложении роль склоняется, точного вхождения не будет никогда."""
+        r = self._check(monkeypatch, [
+            {"surface": "Óscar Puente", "salience": "primary",
+             "role_gloss": "министр транспорта"}],
+            "**Критика министра транспорта Óscar Puente**")
+        assert r.passed, r.reason()
+
+    def test_gloss_only_in_the_field_blocks(self, monkeypatch):
+        """Модель вернула роль, но в текст её не поставила — читателю нечего
+        прочитать рядом с именем."""
+        r = self._check(monkeypatch, [
+            {"surface": "Javier Negre", "salience": "primary",
+             "role_gloss": "основатель канала EDATV"}],
+            "**Скандал вокруг Javier Negre**")
+        assert not r.passed
+
+    def test_pool_of_facts_is_enough(self, monkeypatch):
+        """Роли в тексте нет, но контекст соберётся из пула — это тоже ответ
+        на «кто это»."""
+        r = self._check(monkeypatch, [
+            {"surface": "Javier Negre", "salience": "primary", "role_gloss": ""}],
+            "**Скандал вокруг Javier Negre**", pool=True)
+        assert r.passed, r.reason()
+
+    def test_secondary_entities_are_not_required(self, monkeypatch):
+        r = self._check(monkeypatch, [
+            {"surface": "CEOE", "salience": "secondary", "role_gloss": ""}],
+            "**Заголовок без пояснений**")
+        assert r.passed, r.reason()
+
+    def test_no_entities_passes(self, monkeypatch):
+        r = self._check(monkeypatch, [], "**Лесной пожар в Уэльве**")
+        assert r.passed, r.reason()
+
+    def test_check_can_be_switched_off(self, monkeypatch):
+        """Ворота, которые режут нормальные посты, должны выключаться
+        конфигом, а не правкой кода."""
+        from quepasa.config import get_settings
+        s = get_settings()
+        s["entities"]["require_role_gloss"] = False
+        try:
+            r = self._check(monkeypatch, [
+                {"surface": "Javier Negre", "salience": "primary",
+                 "role_gloss": ""}], "**Скандал**")
+            assert r.passed
+        finally:
+            s["entities"]["require_role_gloss"] = True

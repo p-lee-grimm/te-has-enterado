@@ -1,8 +1,11 @@
-"""Сущности: матчинг, правила показа, рендер карточек (§7).
+"""Сущности: матчинг, правила показа, рендер блока контекста (§7).
 
-Карточка отвечает только на «кто это». Почему новость важна — это
-significance в теле поста: одна и та же сущность в разных сюжетах важна
-по-разному.
+Блок отвечает только на «кто это». Почему новость важна — это significance
+в теле поста: одна и та же сущность в разных сюжетах важна по-разному.
+
+Сам текст блока здесь не рождается: он собирается из пула проверенных фактов
+под тему конкретного поста (см. `facts.py`) и хранится на посте. Здесь только
+правила показа и разметка.
 
 Автосоздание сущностей запрещено. Ошибка матчинга даёт дубликат, дубликаты
 расходятся в фактах, разгребать дороже, чем завести руками по три штуки
@@ -171,19 +174,25 @@ def resolve_all(conn, extracted: list[dict[str, Any]], cluster_id: int | None = 
 
 
 def pick_for_display(conn, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Какие карточки показать в этом посте (§7.5).
+    """Кому в этом посте собирать контекст.
 
-    Показываем только утверждённые, не помеченные never_explain и не
-    объяснявшиеся недавно. Из оставшихся — не больше двух: primary вперёд,
+    Берём тех, у кого есть пул фактов, кто не помечен never_explain и кого
+    не объясняли недавно. Из оставшихся — не больше двух: primary вперёд,
     при равенстве берём менее знакомую читателю (меньше упоминаний).
+
+    Это ещё не показ: собранный контекст может не получиться (подходящих
+    под тему фактов нет, сборка не прошла проверку), и тогда сущность
+    в блок не попадёт. Читателя в этом случае держит role_gloss в теле поста.
     """
+    from .facts import has_pool
+
     s = get_settings()
     limit = int(s.get_path("entities.max_cards_per_post", 2))
     cooldown = int(s.get_path("entities.explain_cooldown_days", 35))
 
     ok: list[dict[str, Any]] = []
     for e in entities:
-        if e["card_status"] != "approved" or e["never_explain"] or not e["card"].strip():
+        if e["never_explain"] or not has_pool(conn, e["id"]):
             continue
         if e["last_explained_at"] is not None:
             row = conn.execute(
@@ -231,7 +240,7 @@ def mark_entities(text_md: str, entities: list[dict[str, Any]]) -> str:
 
 
 def strip_leading_name(card: str, *names: str) -> str:
-    """Убирает имя из начала карточки.
+    """Убирает имя из начала собранного контекста.
 
     Имя подставляется отдельно и ссылкой, поэтому повтор в тексте даёт
     «Margarita Robles — Margarita Robles — министр обороны». Промпт это
@@ -250,8 +259,23 @@ def strip_leading_name(card: str, *names: str) -> str:
     return text
 
 
-def render_cards_html(entities: list[dict[str, Any]]) -> str:
-    """Свёрнутая цитата. Пустого блока быть не должно — нет карточек, нет блока.
+def context_text(contexts: dict[str, Any] | None, entity_id: str) -> tuple[str, str]:
+    """Собранный контекст сущности и ссылка на источник его фактов."""
+    item = (contexts or {}).get(entity_id)
+    if isinstance(item, str):
+        return item.strip(), ""
+    if isinstance(item, dict):
+        return (item.get("context") or "").strip(), (item.get("url") or "").strip()
+    return "", ""
+
+
+def render_cards_html(entities: list[dict[str, Any]],
+                      contexts: dict[str, Any] | None = None) -> str:
+    """Свёрнутая цитата. Пустого блока быть не должно — нет контекста, нет блока.
+
+    Текст берётся из собранного заранее контекста, а не из сущности: он
+    зависит от темы поста, и один и тот же человек в новости про газету и
+    в новости про стадион описывается разными фактами из одного пула.
 
     Заголовка у блока нет намеренно: «Кто это» занимает первую строку, которая
     и так видна в свёрнутом виде, — вместо пояснения читатель видит служебную
@@ -262,13 +286,18 @@ def render_cards_html(entities: list[dict[str, Any]]) -> str:
     esc = html.escape
     lines = []
     for e in entities:
+        text, url = context_text(contexts, e["id"])
+        if not text:
+            continue
         name = esc(e["name_es"])
-        # тексты Википедии под CC BY-SA: ссылка на статью-источник обязательна,
-        # поэтому имя при показе — ссылка (§11)
-        url = e.get("wiki_url_ru") or e.get("wiki_url_es")
+        # тексты Википедии под CC BY-SA: ссылка на источник обязательна,
+        # поэтому имя при показе — ссылка (§11). Ведёт она туда, откуда взяты
+        # показанные факты, а не в общую статью о сущности.
+        url = url or e.get("wiki_url_ru") or e.get("wiki_url_es") or ""
         title = f'<a href="{esc(url, quote=True)}">{name}</a>' if url else f"<b>{name}</b>"
-        card = strip_leading_name(e["card"], e.get("name_es"), e.get("name_ru"))
-        lines.append(f"{title} — {esc(card)}")
+        lines.append(f"{title} — {esc(strip_leading_name(text, e.get('name_es'), e.get('name_ru')))}")
+    if not lines:
+        return ""
     return "<blockquote expandable>" + "\n".join(lines) + "</blockquote>"
 
 
@@ -417,8 +446,7 @@ def act_on_unresolved(conn, unres_id: int, action: str) -> tuple[str | None, str
     ).fetchone()
     if not exists:
         conn.execute(
-            "INSERT INTO entities (id, name_es, type, card, card_status) "
-            "VALUES (%s, %s, 'other', '', 'draft')",
+            "INSERT INTO entities (id, name_es, type) VALUES (%s, %s, 'other')",
             (entity_id, name),
         )
 
@@ -465,9 +493,16 @@ def cards_keyboard(entities: list[dict[str, Any]], post_id: int) -> dict[str, An
 
 
 def handle_tap(conn, entity_id: str, post_id: int, user_id: int | None) -> str:
-    """Ответ на нажатие: текст карточки всплывающим окном."""
+    """Ответ на нажатие: собранный для этого поста контекст всплывающим окном.
+
+    Текст берём из самого поста, а не из сущности: он собирался под эту тему,
+    и показать надо ровно то, что показала бы цитата в обычном выпуске.
+    """
     row = conn.execute(
-        "SELECT name_es, card FROM entities WHERE id = %s", (entity_id,)
+        "SELECT name_es FROM entities WHERE id = %s", (entity_id,)
+    ).fetchone()
+    post = conn.execute(
+        "SELECT entity_context FROM posts WHERE id = %s", (post_id or 0,)
     ).fetchone()
     conn.execute(
         "INSERT INTO context_taps (entity_id, post_id, user_id) VALUES (%s,%s,%s)",
@@ -475,5 +510,8 @@ def handle_tap(conn, entity_id: str, post_id: int, user_id: int | None) -> str:
     )
     if row is None:
         return "Пояснение недоступно"
-    # 200 символов — предел answerCallbackQuery, отсюда и лимит карточки
-    return f"{row['name_es']} — {row['card']}"[:200]
+    text, _ = context_text(post["entity_context"] if post else None, entity_id)
+    if not text:
+        return "Пояснение недоступно"
+    # 200 символов — предел answerCallbackQuery, отсюда и лимит сборки
+    return f"{row['name_es']} — {text}"[:200]
