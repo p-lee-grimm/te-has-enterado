@@ -198,6 +198,34 @@ def _latin_names_in(titles: Iterable[str]) -> list[str]:
     return found
 
 
+# Славянские фамилии испанская пресса передаёт своей латиницей: Shapovalov,
+# Zelenski, Chaikovski. Возвращать её в русский текст — двойная транскрипция,
+# поэтому такие имена восстановлению не подлежат: по-русски они пишутся
+# кириллицей, и это исходная форма, а не перевод.
+_SLAVIC_TAIL = re.compile(r"(ov|ev|off|ski|sky|ich|vic|vich|enko)a?$", re.I)
+
+# Окончание -in в список не входит: «Martin», «Marin», «Rubin» испанские,
+# и по нему они уезжали бы в славянские. Коротких славянских имён на -in
+# немного, и проще перечислить их прямо.
+_SLAVIC_KNOWN = {"putin", "stalin", "lenin", "yeltsin", "kalinin"}
+
+
+# Окончание -in/-ina опознаём только у длинных слов: «Rybakina» славянская,
+# а испанские «Martin», «Medina», «Molina» — нет, и все они короче семи букв.
+# «Cortina» в эту щель пролезет, но цена ошибки мала: имя останется
+# кириллицей вместо латиницы.
+_SLAVIC_IN = re.compile(r"ina?$", re.I)
+
+
+def _is_slavic(name: str) -> bool:
+    last = name.split()[-1]
+    if last.casefold() in _SLAVIC_KNOWN:
+        return True
+    if len(last) >= 6 and _SLAVIC_TAIL.search(last):
+        return True
+    return len(last) >= 7 and bool(_SLAVIC_IN.search(last))
+
+
 def _is_place(name: str, places: set[str]) -> bool:
     """Место или нет. Проверяем и латиницу, и её кириллическую форму.
 
@@ -238,7 +266,7 @@ def restore_latin_names(text: str, titles: Iterable[str]) -> str:
 
     variants: list[str] = []
     for name in dict.fromkeys(_latin_names_in(titles)):
-        if _is_place(name, places):
+        if _is_place(name, places) or _is_slavic(name):
             continue
         variants.append(name)
         surname = name.split()[-1]

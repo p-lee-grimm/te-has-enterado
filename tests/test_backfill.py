@@ -519,3 +519,26 @@ class TestStaleListedEntities:
         post["header_md"] = "**Погода в Мадриде**"
         res = self._run(monkeypatch, post)
         assert res["checked"] == 0
+
+
+class TestSlavicNames:
+    """Славянское имя по-русски пишется кириллицей — это его исходная форма."""
+
+    def test_slavic_names_stay_cyrillic(self):
+        """Испанская пресса пишет их своей латиницей — возвращать её
+        в русский текст значит транскрибировать дважды."""
+        from quepasa.posts import restore_latin_names
+        out = restore_latin_names(
+            "Jódar обыграл Шаповалова в Cincinnati",
+            ["Jódar remonta ante Shapovalov y avanza en Cincinnati"])
+        assert "Шаповалова" in out, "славянская фамилия остаётся кириллицей"
+        assert "Jódar" in out, "испанская — латиницей"
+
+    def test_slavic_detection(self):
+        from quepasa.posts import _is_slavic
+        for name in ("Denis Shapovalov", "Volodimir Zelenski", "Novak Djokovic",
+                     "Andrei Chaikovski", "Elena Rybakina", "Vladimir Putin"):
+            assert _is_slavic(name), name
+        for name in ("Pedro Sánchez", "Rafa Jódar", "Laura Cabanes",
+                     "Carlos Martin", "Ana Marin", "Óscar Puente"):
+            assert not _is_slavic(name), name
