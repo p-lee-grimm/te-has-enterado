@@ -117,6 +117,16 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
             from .posts import publish
 
             _, action, cluster_id = data.split(":", 2)
+            if action == "del":
+                # снятие вышедшего поста: здесь приходит id поста, не сюжета
+                from .posts import unpublish
+
+                answer_callback(cq["id"], unpublish(int(cluster_id)))
+                stats["posts_removed"] = stats.get("posts_removed", 0) + 1
+                msg = cq.get("message") or {}
+                if msg:
+                    edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
+                continue
             if action == "pub":
                 try:
                     publish(int(cluster_id), dry_run=False)
@@ -198,14 +208,29 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
         reply_to = msg.get("reply_to_message") or {}
         text = (msg.get("text") or "").strip()
         handled = False
+        # Команда в чате: владелец работает из телефона, консоли под рукой нет
+        if text.startswith("/"):
+            from .commands import run_command
+
+            notify_owner(run_command(text))
+            stats["commands"] = stats.get("commands", 0) + 1
+            continue
+
         if text and reply_to.get("text"):
             from .factops import fact_id_in, fix
+            from .posts import published_message_id_in, rewrite_published
 
             fact_id = fact_id_in(reply_to.get("text", ""))
+            mid = published_message_id_in(reply_to.get("text", ""))
             if fact_id:
                 handled = True
                 answer = fix(fact_id, text)
                 notify_owner(answer)
+                stats["edited"] += 1
+            elif mid:
+                # ответ на уведомление о вышедшем посте — это новая шапка
+                handled = True
+                notify_owner(rewrite_published(mid, text))
                 stats["edited"] += 1
 
         if not handled and not cq:

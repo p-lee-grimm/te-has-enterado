@@ -140,7 +140,11 @@ def main() -> int:
         # опаздывал всегда — владелец видел мёртвую кнопку.
         import time as _time
 
+        from quepasa.commands import register
         from quepasa.review import process_callbacks
+
+        # подсказка команд в чате: без неё владелец должен помнить их наизусть
+        register()
         log.info("Слушаю нажатия (долгое ожидание %s с)", args.poll_timeout)
         while True:
             try:

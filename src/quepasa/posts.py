@@ -871,8 +871,145 @@ def publish(cluster_id: int, dry_run: bool = True, silent: bool = True,
     log.info("Сюжет %s опубликован%s%s, message_id=%s",
              cluster_id, "" if silent else " СО ЗВУКОМ",
              f" реплаем на {reply_to}" if reply_to else "", message_id)
+    notify_published(post["id"], message_id, post["header_md"])
     return {"status": "published", "message_id": message_id, "sources": source_ids,
             "silent": silent, "reply_to": reply_to}
+
+
+def notify_published(post_id: int, message_id: int | None, header_md: str) -> None:
+    """Сообщает владельцу о вышедшем посте — постфактум, не спрашивая.
+
+    Ждать подтверждения по каждому посту нельзя: их два десятка в сутки,
+    и очередь на согласование останавливает канал целиком. Поэтому пост
+    выходит сам, а владелец получает его текст и может переписать ответом
+    или снять. Правка сообщения уведомление читателям не шлёт, так что
+    исправление задним числом ничего не стоит.
+    """
+    import html as _html
+
+    from .telegram import message_link
+
+    if not message_id:
+        return
+    link = message_link(message_id)
+    head = (header_md or "").split("\n")[0].strip("* ")
+    text = "\n".join([
+        f'📣 <a href="{link}">Пост {message_id}</a> вышел',
+        "",
+        _html.escape(head),
+        "",
+        "<i>Ответь реплаем — перепишу шапку. Кнопка снимает пост из канала.</i>",
+    ])
+    notify_owner(text, reply_markup={"inline_keyboard": [[
+        {"text": "🗑 Снять из канала", "callback_data": f"post:del:{post_id}"},
+    ]]})
+
+
+_PUBLISHED_LINK = re.compile(r"Пост (\d+)\D")
+
+
+def published_message_id_in(text: str) -> int | None:
+    """message_id из уведомления о вышедшем посте, если это оно."""
+    m = _PUBLISHED_LINK.search(text or "")
+    return int(m.group(1)) if m else None
+
+
+def rewrite_published(message_id: int, new_head: str) -> str:
+    """Заменяет шапку вышедшего поста текстом владельца и пересобирает его.
+
+    Слово владельца выше модели: текст берём как есть, без правил имён
+    и без ворот. Ворота защищают от модели, а не от человека.
+    """
+    from .entities import render_cards_html
+    from .telegram import message_link
+
+    new_head = (new_head or "").strip()
+    if not new_head:
+        return "Пустой текст — шапку не трогаю."
+
+    # первая строка становится заголовком, остальное — лидом
+    lines = new_head.split("\n", 1)
+    header_md = f"**{lines[0].strip().strip('*')}**"
+    if len(lines) > 1 and lines[1].strip():
+        header_md += f"\n\n{lines[1].strip()}"
+
+    with connect() as conn:
+        post = conn.execute(
+            "SELECT * FROM posts WHERE message_id = %s", (message_id,)
+        ).fetchone()
+        if post is None:
+            return f"Поста {message_id} нет в базе — переписать не могу."
+        conn.execute("UPDATE posts SET header_md = %s WHERE id = %s",
+                     (header_md, post["id"]))
+
+    n = refresh_one(post["id"])
+    link = message_link(message_id)
+    return (f'Шапка <a href="{link}">поста {message_id}</a> заменена'
+            + ("." if n else ", но текст в канале не изменился."))
+
+
+def unpublish(post_id: int) -> str:
+    """Снимает вышедший пост из канала.
+
+    Сюжет помечаем skipped, а не draft: снятый вручную пост не должен
+    выйти заново на следующем прогоне.
+    """
+    from .config import env
+    from .telegram import delete_message
+
+    with connect() as conn:
+        post = conn.execute(
+            "SELECT id, message_id FROM posts WHERE id = %s", (post_id,)
+        ).fetchone()
+        if post is None:
+            return "Поста уже нет"
+        if post["message_id"]:
+            delete_message(env("TELEGRAM_CHANNEL_ID", required=True),
+                           int(post["message_id"]))
+        conn.execute(
+            "UPDATE posts SET status = 'skipped', message_id = NULL WHERE id = %s",
+            (post_id,),
+        )
+    log.info("Пост %s снят из канала владельцем", post_id)
+    return "Снято"
+
+
+def refresh_one(post_id: int) -> int:
+    """Пересобирает один пост по текущим данным. Возвращает 1, если правка ушла."""
+    from .config import env
+    from .entities import render_cards_html
+
+    with connect() as conn:
+        post = conn.execute(
+            "SELECT * FROM posts WHERE id = %s", (post_id,)
+        ).fetchone()
+        if post is None or not post["message_id"]:
+            return 0
+        articles = cluster_articles(conn, post["cluster_id"])
+        cards = [dict(r) for r in conn.execute(
+            "SELECT * FROM entities WHERE id = ANY(%s)",
+            (list(post.get("entity_ids") or []),),
+        ).fetchall()]
+
+    text = compose_html(
+        post["header_md"], articles, post["category"],
+        one_sided=bool(post.get("one_sided")),
+        significance=post.get("significance") or "",
+        cards_html=render_cards_html(cards, post.get("entity_context") or {}),
+        cards=cards, related_md=post.get("related_md") or "",
+        geo_tag=post.get("geo_tag"),
+    )
+    try:
+        edit_message_text(env("TELEGRAM_CHANNEL_ID", required=True),
+                          int(post["message_id"]), text)
+    except Exception as exc:  # noqa: BLE001
+        if "not modified" not in str(exc):
+            log.warning("Пост %s не пересобрался: %s", post_id, exc)
+        return 0
+    with connect() as conn:
+        conn.execute("UPDATE posts SET edited_at = now(), "
+                     "edit_count = edit_count + 1 WHERE id = %s", (post_id,))
+    return 1
 
 
 def pending_updates(conn) -> list[dict[str, Any]]:
