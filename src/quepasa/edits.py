@@ -82,11 +82,20 @@ def check_post(conn, post: dict[str, Any]) -> dict[str, Any] | None:
     if not headline:
         return None
 
+    # Те же правила имён, что и при сборке поста. Правка идёт отдельным
+    # вызовом модели и мимо generate_header, поэтому без этого «ПП» и
+    # транскрипции возвращаются в уже вычищенный пост.
+    from .posts import fix_names, restore_latin_names
+
+    headline = restore_latin_names(fix_names(headline), titles)
+    lead = restore_latin_names(fix_names(lead), titles)
+    what = restore_latin_names(fix_names((data.get("what") or "").strip()), titles)
+
     new_header = f"**{headline}**" + (f"\n\n{lead}" if lead else "")
     return {
         "post_id": post["id"],
         "new_header": new_header,
-        "what_changed": (data.get("what") or "").strip(),
+        "what_changed": what,
         "cost_usd": round(usage.cost_usd, 4),
     }
 

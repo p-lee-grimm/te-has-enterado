@@ -206,3 +206,46 @@ class TestNotModifiedIsNotAnError:
                     "Forbidden: bot was blocked by the user",
                     "Too Many Requests: retry after 41"):
             assert "not modified" not in msg
+
+
+class TestEditKeepsNameRules:
+    """Смысловая правка идёт мимо generate_header — правила имён нужны и там.
+
+    Живой случай: пост 111 после правки получил «ПП» вместо PP, хотя
+    в исходном посте всё было верно. Правка собирает шапку заново, своим
+    вызовом модели, и раньше ни fix_names, ни restore_latin_names к ней
+    не применялись.
+    """
+
+    def test_party_name_fixed_in_edit(self, monkeypatch):
+        import quepasa.edits as edits
+        monkeypatch.setattr(edits, "_diff_call", lambda md, titles, usage: {
+            "changed": True, "headline": "ПП требует отставки",
+            "lead": "Народная партия настаивает.", "what": "требование от ПП"})
+        post = {"id": 1, "cluster_id": 2, "header_md": "**Было**"}
+
+        class Conn:
+            def execute(self, sql, params=None):
+                return type("R", (), {"fetchall": lambda s: [
+                    {"title": "El PP pide la dimisión"}]})()
+
+        draft = edits.check_post(Conn(), post)
+        assert "PP требует" in draft["new_header"]
+        assert "ПП" not in draft["new_header"]
+        assert "Народная партия" not in draft["new_header"]
+        assert "ПП" not in draft["what_changed"]
+
+    def test_transcribed_name_restored_in_edit(self, monkeypatch):
+        import quepasa.edits as edits
+        monkeypatch.setattr(edits, "_diff_call", lambda md, titles, usage: {
+            "changed": True, "headline": "Педро Санчес выступил", "lead": "",
+            "what": "выступление"})
+        post = {"id": 1, "cluster_id": 2, "header_md": "**Было**"}
+
+        class Conn:
+            def execute(self, sql, params=None):
+                return type("R", (), {"fetchall": lambda s: [
+                    {"title": "Pedro Sánchez comparece en el Congreso"}]})()
+
+        draft = edits.check_post(Conn(), post)
+        assert "Pedro Sánchez" in draft["new_header"]
