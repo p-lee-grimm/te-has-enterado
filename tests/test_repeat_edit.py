@@ -184,3 +184,25 @@ class TestAutopostSwitch:
             assert p.autopost_enabled()
         finally:
             get_settings()["autopost"]["enabled"] = False
+
+
+class TestNotModifiedIsNotAnError:
+    """«not modified» — не сбой, а «видимый текст не изменился».
+
+    Живой случай: в сюжет пришла laSexta, но при потолке в пять ссылок
+    выбранная пятёрка не поменялась. Telegram отверг правку, sync_post счёл
+    это ошибкой и не записал posted_source_ids — и следующий прогон зашёл
+    на тот же круг. Пост бился о Telegram каждые полчаса семь часов подряд.
+    """
+
+    def test_marker_recognised(self):
+        exc = Exception(
+            "editMessageText: Bad Request: message is not modified: specified "
+            "new message content and reply markup are exactly the same")
+        assert "not modified" in str(exc)
+
+    def test_real_errors_still_fail(self):
+        for msg in ("Bad Request: message to edit not found",
+                    "Forbidden: bot was blocked by the user",
+                    "Too Many Requests: retry after 41"):
+            assert "not modified" not in msg

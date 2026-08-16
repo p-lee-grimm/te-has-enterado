@@ -314,7 +314,11 @@ def cluster_articles(conn, cluster_id: int) -> list[dict[str, Any]]:
         """
         SELECT DISTINCT ON (a.source_id)
                a.id, a.title, a.url, a.url_canonical, a.published_at,
-               a.source_id, s.name AS source_name, s.lean, s.type
+               a.source_id, s.name AS source_name, s.lean, s.type,
+               -- без owner_group owner_of() молча откатывается на source_id,
+               -- и правило «считаем владельцев, а не издания» перестаёт
+               -- действовать: две газеты одного холдинга дают две ссылки
+               s.owner_group
         FROM articles a
         JOIN sources s ON s.id = a.source_id
         WHERE a.cluster_id = %s
@@ -898,8 +902,14 @@ def sync_post(cluster_id: int, dry_run: bool = True) -> dict[str, Any]:
     try:
         edit_message_text(channel, int(post["message_id"]), text)
     except Exception as exc:  # noqa: BLE001 — одна неудачная правка не роняет прогон
-        log.warning("Не удалось поправить пост сюжета %s: %s", cluster_id, exc)
-        return {"status": "error", "cluster_id": cluster_id, "error": str(exc)}
+        # «not modified» — это не сбой: источник добавился, а видимый текст
+        # от этого не изменился. Считать такое ошибкой нельзя: список
+        # источников тогда не запишется, и следующий прогон зайдёт на тот же
+        # круг — пост будет биться о Telegram каждые полчаса бесконечно.
+        if "not modified" not in str(exc):
+            log.warning("Не удалось поправить пост сюжета %s: %s", cluster_id, exc)
+            return {"status": "error", "cluster_id": cluster_id, "error": str(exc)}
+        log.info("Сюжет %s: источники добавились, текст поста не изменился", cluster_id)
 
     with connect() as conn:
         conn.execute(
