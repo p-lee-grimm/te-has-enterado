@@ -95,24 +95,36 @@ class TestLinkBlock:
             art("eldiario", "elDiario.es", "left"),
             art("lavanguardia", "La Vanguardia", "center"),
         ]
-        lines = render_links_md(arts).split("\n")
-        assert lines[0].startswith(LEAN_EMOJI["left"])
-        assert lines[1].startswith(LEAN_EMOJI["center"])
-        assert lines[2].startswith(LEAN_EMOJI["right"])
+        out = render_links_md(arts)
+        assert out.count("\n") == 0, "издания идут одной строкой"
+        # порядок — слева направо по шкале
+        assert (out.index(LEAN_EMOJI["left"])
+                < out.index(LEAN_EMOJI["center"])
+                < out.index(LEAN_EMOJI["right"]))
 
-    def test_same_lean_outlets_share_a_line(self):
+    def test_same_lean_outlets_share_one_emoji(self):
+        """«➡️ ABC · ➡️ OKdiario» — это один фланг, названный дважды."""
         arts = [art("abc", "ABC", "right"), art("okdiario", "OKdiario", "right")]
         out = render_links_md(arts)
         assert out.count("\n") == 0
+        assert out.count(LEAN_EMOJI["right"]) == 1
         assert "ABC" in out and "OKdiario" in out
+
+    def test_one_outlet_per_flank_unchanged(self):
+        """Когда на значок приходится одно издание, вид прежний."""
+        arts = [art("elespanol", "El Español", "center-right"),
+                art("larazon", "La Razón", "right")]
+        out = render_links_md(arts)
+        assert out == ("▶️ [El Español](https://elespanol.es/a) · "
+                       "➡️ [La Razón](https://larazon.es/a)")
 
     def test_official_goes_last_and_apart(self):
         arts = [art("abc", "ABC", "right"), art("boe", "BOE", "center", "official")]
-        lines = render_links_md(arts).split("\n")
-        assert lines[-1].startswith("🏛")
-        assert "BOE" in lines[-1]
-        # официальный источник не смешивается с центристскими изданиями
-        assert "BOE" not in lines[0]
+        out = render_links_md(arts)
+        # официальный источник — в конце и под своим значком, а не среди
+        # центристских изданий: позиции в спектре у него нет
+        assert out.index("🏛") > out.index("ABC")
+        assert out.endswith("[BOE](https://boe.es/a)")
 
     def test_extreme_flanks_render(self):
         arts = [art("a", "A", "far-left"), art("b", "B", "far-right")]

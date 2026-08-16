@@ -386,48 +386,50 @@ def pick_links(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-def render_links_md(articles: list[dict[str, Any]]) -> str:
-    """Блок «полюс -> издания со ссылками», в markdown.
+def group_sources_md(articles: list[dict[str, Any]]) -> str:
+    """Издания одной строкой: значок полюса, за ним издания этого полюса.
 
-    Группируем по позиции в спектре: смысл продукта в том, чтобы читатель видел,
-    кто именно об этом пишет и с какой стороны.
+        ⬅️ elDiario.es · infoLibre · ◀️ 20minutos · ➡️ La Razón
+
+    Значок ставится один раз на группу, а не на каждое издание: две газеты
+    одного фланга — это по-прежнему один фланг, и повтор стрелки только
+    удлиняет строку. Разделитель везде один и тот же, границу группы
+    показывает сам значок.
+
+    Порядок — слева направо по шкале, потом агентства, потом официальные
+    источники: у них позиции нет, и в спектр они не встают.
     """
-    articles = pick_links(articles)
-
-    by_lean: dict[str, list[dict[str, Any]]] = {}
-    official: list[dict[str, Any]] = []
-
+    groups: dict[str, list[dict[str, Any]]] = {}
     for art in articles:
-        url = art.get("url") or art.get("url_canonical")
-        if not url:
+        if not (art.get("url") or art.get("url_canonical")):
             continue
         if art.get("type") == "official":
-            official.append(art)
+            key = "official"
+        elif art.get("type") == "agency":
+            key = "agency"
         else:
-            by_lean.setdefault(art["lean"], []).append(art)
+            key = art["lean"]
+        groups.setdefault(key, []).append(art)
 
-    agency = [a for a in articles if a.get("type") == "agency"]
-    by_lean = {k: [x for x in v if x.get("type") != "agency"] for k, v in by_lean.items()}
-    by_lean = {k: v for k, v in by_lean.items() if v}
-
-    def render_group(marker: str, group: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for key in [*LEAN_ORDER, "agency", "official"]:
+        group = groups.get(key)
+        if not group:
+            continue
+        marker = {"agency": AGENCY_EMOJI, "official": OFFICIAL_EMOJI}.get(
+            key, LEAN_EMOJI.get(key, "")
+        )
         links = " · ".join(
             f'[{a["source_name"]}]({a.get("url") or a["url_canonical"]})'
             for a in sorted(group, key=lambda x: x["source_name"])
         )
-        return f"{marker} {links}"
+        parts.append(f"{marker} {links}")
+    return " · ".join(parts)
 
-    lines = [
-        render_group(LEAN_EMOJI[lean], by_lean[lean])
-        for lean in LEAN_ORDER
-        if by_lean.get(lean)
-    ]
-    if agency:
-        lines.append(render_group(AGENCY_EMOJI, agency))
-    if official:
-        lines.append(render_group(OFFICIAL_EMOJI, official))
 
-    return "\n".join(lines)
+def render_links_md(articles: list[dict[str, Any]]) -> str:
+    """Блок источников поста: одной строкой, сгруппированной по полюсам."""
+    return group_sources_md(pick_links(articles))
 
 
 def legend_md() -> str:

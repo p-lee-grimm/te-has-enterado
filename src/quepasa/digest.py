@@ -66,14 +66,11 @@ def _source_marks(articles: list[dict[str, Any]]) -> str:
             picked.insert(len(picked) - 1, middle.pop(len(middle) // 2))
         ordered = picked
 
-    parts = []
-    for art in ordered:
-        mark = {"official": OFFICIAL_EMOJI, "agency": AGENCY_EMOJI}.get(
-            art.get("type"), LEAN_EMOJI.get(art["lean"], "")
-        )
-        url = art.get("url") or art["url_canonical"]
-        parts.append(f"{mark} [{art['source_name']}]({url})")
-    return " · ".join(parts)
+    # Значок на группу, а не на издание: «➡️ ABC · ➡️ OKdiario» — это один
+    # и тот же фланг, названный дважды.
+    from .posts import group_sources_md
+
+    return group_sources_md(ordered)
 
 
 def group_by_category(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
