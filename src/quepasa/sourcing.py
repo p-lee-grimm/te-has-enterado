@@ -128,12 +128,24 @@ def _wikidata(name: str) -> dict[str, Any] | None:
             "url": f"https://www.wikidata.org/wiki/{item['id']}", "lang": "es"}
 
 
-def _press(conn, entity: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
+def _press(conn, entity: dict[str, Any], limit: int | None = None
+           ) -> list[dict[str, Any]]:
     """Статьи, где имя встретилось, по одному источнику на запись.
 
     Полюс источника едет вместе с текстом: спорность характеристики решается
     тем, сходятся ли разные бакеты, и без метки полюса это решение не принять.
+    Отсюда и минимум в две статьи: с одной характеристика всё равно останется
+    позицией одного лагеря и в пул не пойдёт.
+
+    Число статей ограничено жёстко. Пресса разрешает только должность при
+    имени и оценку с атрибуцией — то есть добавляет к энциклопедии немного,
+    — а стоит каждая статья двух вызовов модели. Шесть статей на сущность
+    превращали пересборку реестра в многочасовой прогон.
     """
+    if limit is None:
+        limit = int(get_settings().get_path("facts.press_sources", 2))
+    if limit <= 0:
+        return []
     import re
 
     from .spectrum import bucket
@@ -149,16 +161,16 @@ def _press(conn, entity: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]
         FROM articles a JOIN sources s ON s.id = a.source_id
         WHERE (a.title ~* %s OR a.summary_feed ~* %s OR a.body ~* %s)
         ORDER BY a.published_at DESC NULLS LAST
-        LIMIT %s
+        LIMIT 40
         """,
-        (pattern, pattern, pattern, limit),
+        (pattern, pattern, pattern),
     ).fetchall()
 
-    out = []
+    candidates = []
     for r in rows:
         if not (r["text"] or "").strip():
             continue
-        out.append({
+        candidates.append({
             "tier": "press",
             "url": r["url"],
             "title": r["title"],
@@ -166,7 +178,29 @@ def _press(conn, entity: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]
             "attribution": r["source_name"],
             "bucket": bucket(r["lean"]) or "" if r["type"] == "press" else "",
         })
-    return out
+
+    # Берём статьи из РАЗНЫХ бакетов, а не просто самые свежие. Характеристика,
+    # встреченная только у одного полюса, в пул не идёт по определению, — и две
+    # свежайшие статьи, оказавшиеся из одного лагеря, гарантированно дают
+    # нулевой результат. Разные полюса — единственный расклад, при котором
+    # оценочный факт вообще может появиться.
+    picked: list[dict[str, Any]] = []
+    seen_buckets: set[str] = set()
+    for item in candidates:
+        if item["bucket"] and item["bucket"] in seen_buckets:
+            continue
+        seen_buckets.add(item["bucket"])
+        picked.append(item)
+        if len(picked) >= limit:
+            return picked
+
+    for item in candidates:
+        if item in picked:
+            continue
+        picked.append(item)
+        if len(picked) >= limit:
+            break
+    return picked
 
 
 def ladder(conn, entity: dict[str, Any], *, with_press: bool = True

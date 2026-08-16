@@ -306,3 +306,41 @@ class TestSelection:
 
     def test_empty_pool_gives_nothing(self):
         assert select_facts([], "экономика") == []
+
+
+class TestAboutTheEntityItself:
+    """Факт о сущности, а не о людях, названных рядом с ней.
+
+    Живой случай: газетная статья о Partido Popular дала семь «фактов» вида
+    «Cuca Gamarra — вицесекретарь по регенерации институциональной». Читателю,
+    спросившему, что такое PP, список вицесекретарей не отвечает ничего.
+    """
+
+    PP = {"name_es": "Partido Popular", "name_ru": "Народная партия"}
+    ACS = {"name_es": "Florentino Pérez", "name_ru": "Флорентино Перес"}
+
+    def test_functionary_of_the_party_rejected(self):
+        problems = validate_fact(
+            fact("Cuca Gamarra — вицесекретарь Народной партии"), entity=self.PP)
+        assert any("постороннем лице" in p for p in problems)
+
+    def test_own_role_passes(self):
+        assert validate_fact(fact("Возглавляет оппозицию в парламенте"),
+                             entity=self.PP) == []
+
+    def test_role_starting_with_position_passes(self):
+        """«Президент Реал Мадрида» тоже начинается с двух заглавных слов."""
+        assert validate_fact(fact("Президент Реал Мадрида", topics=("спорт",)),
+                             entity=self.ACS) == []
+
+    def test_organisation_scale_may_start_with_its_name(self):
+        """«Grupo ACS — одна из крупнейших» — факт о компании, которой
+        сущность руководит, и он законен."""
+        assert validate_fact(
+            fact("Grupo ACS — одна из крупнейших строительных компаний Европы",
+                 "scale", topics=("экономика",)), entity=self.ACS) == []
+
+    def test_entity_named_in_its_own_fact_passes(self):
+        assert validate_fact(
+            fact("Partido Popular — правоцентристская партия", "classification"),
+            entity=self.PP) == []

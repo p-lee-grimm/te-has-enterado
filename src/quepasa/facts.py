@@ -85,6 +85,15 @@ _NUMBERS = [
      "дата назначения"),
 ]
 
+# «Имя Фамилия — должность» в начале факта. Газетная статья о партии
+# перечисляет её функционеров, и извлекатель охотно приносит их должности
+# как факты о самой партии: в пуле Partido Popular оказалось семь записей
+# вида «Cuca Gamarra — вицесекретарь по регенерации институциональной».
+# Читателю, спросившему «что такое PP», это не отвечает ничего.
+_NAMED_PERSON = re.compile(
+    r"^([A-ZÁÉÍÓÚÑÜА-ЯЁ][\w'’-]+(?:\s+[A-ZÁÉÍÓÚÑÜА-ЯЁ][\w'’-]+){1,2})\s*[—–-]\s"
+)
+
 # Причастность без процессуальной формы. Допустима только как kind=legal
 # и только формулировкой из словаря.
 _GUILT = [
@@ -167,8 +176,28 @@ def has_outcome(source_text: str) -> bool:
 # --------------------------------------------------------------- слой А
 
 
+def about_someone_else(text: str, kind: str, entity: dict[str, Any] | None) -> bool:
+    """Факт о постороннем лице, а не о самой сущности.
+
+    Проверяется только у `role`: там роль стоит первой («Председатель Grupo
+    ACS»), и начало вида «Имя Фамилия — должность» означает, что извлекатель
+    описал не ту фигуру. У `scale` такое начало законно: «Grupo ACS — одна
+    из крупнейших строительных компаний Европы» — факт о компании, которой
+    сущность руководит.
+    """
+    if kind != "role" or not entity:
+        return False
+    m = _NAMED_PERSON.match(text.strip())
+    if not m:
+        return False
+    named = normalize(m.group(1))
+    own = normalize(f"{entity.get('name_es', '')} {entity.get('name_ru', '')}")
+    return not (named in own or own in named)
+
+
 def validate_fact(fact: dict[str, Any], source_text: str = "",
-                  tier: str = "wiki") -> list[str]:
+                  tier: str = "wiki",
+                  entity: dict[str, Any] | None = None) -> list[str]:
     """Детерминированные проверки одного факта. Без модели.
 
     Список проблем; пустой список — факт прошёл. Всё, что проверяется здесь,
@@ -192,6 +221,9 @@ def validate_fact(fact: dict[str, Any], source_text: str = "",
 
     if len(text) > limit:
         fails.append(f"длина {len(text)} при пределе {limit}")
+
+    if about_someone_else(text, kind, entity):
+        fails.append("факт о постороннем лице, а не о самой сущности")
 
     for group in (_RANKING, _NUMBERS):
         for pattern, what in group:
@@ -406,7 +438,7 @@ def run_extraction(entity: dict[str, Any], source: dict[str, Any], usage: Any,
             if not key or key in seen:
                 continue
             seen.add(key)
-            problems = validate_fact(f, text, tier)
+            problems = validate_fact(f, text, tier, entity)
             if not f.get("found"):
                 problems.append("цитата не найдена в источнике")
             if problems:
