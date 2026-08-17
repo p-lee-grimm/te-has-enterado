@@ -18,7 +18,7 @@ from typing import Any
 from .config import get_settings
 from .db import connect
 from .markup import markdown_to_telegram_html
-from .posts import AGENCY_EMOJI, LEAN_EMOJI, OFFICIAL_EMOJI, cluster_articles
+from .posts import cluster_articles
 from .telegram import send_message
 
 log = logging.getLogger(__name__)

@@ -920,7 +920,6 @@ def rewrite_published(message_id: int, new_head: str) -> str:
     Слово владельца выше модели: текст берём как есть, без правил имён
     и без ворот. Ворота защищают от модели, а не от человека.
     """
-    from .entities import render_cards_html
     from .telegram import message_link
 
     new_head = (new_head or "").strip()
