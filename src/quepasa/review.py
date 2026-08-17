@@ -212,7 +212,9 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
         if text.startswith("/"):
             from .commands import run_command
 
-            notify_owner(run_command(text))
+            answer = run_command(text)
+            if answer:
+                notify_owner(answer)
             stats["commands"] = stats.get("commands", 0) + 1
             continue
 

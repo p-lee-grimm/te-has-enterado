@@ -118,17 +118,64 @@ def _words() -> str:
 
 
 def _queue() -> str:
+    """Показывает саму очередь, а не её длину.
+
+    По числу решение не примешь: чтобы завести имя или отклонить его, надо
+    это имя увидеть. Поэтому здесь список, а следом — те же предложения
+    с кнопками, что приходят сами: действовать надо на них.
+    """
     from .db import connect
+    from .edits import resend_pending
+    from .entities import notify_new_unresolved
+    from .telegram import message_link, notify_owner
 
     with connect() as conn:
-        ent = conn.execute(
-            "SELECT count(*) FROM entity_unresolved WHERE ignored_at IS NULL"
-        ).fetchone()["count"]
+        names = conn.execute(
+            """
+            SELECT surface_raw, surface, count FROM entity_unresolved
+            WHERE ignored_at IS NULL ORDER BY count DESC, last_seen DESC LIMIT 20
+            """
+        ).fetchall()
         edits = conn.execute(
-            "SELECT count(*) FROM post_edits WHERE status = 'pending'"
-        ).fetchone()["count"]
-    return (f"<b>Ждёт решения</b>\n\nИмён в очереди: {ent}\n"
-            f"Правок фактов: {edits}")
+            """
+            SELECT e.id, e.what_changed, p.message_id
+            FROM post_edits e JOIN posts p ON p.id = e.post_id
+            WHERE e.status = 'pending' ORDER BY e.id LIMIT 20
+            """
+        ).fetchall()
+
+    lines = ["<b>Ждёт решения</b>"]
+    if names:
+        lines += ["", f"<b>Имена ({len(names)})</b>"]
+        for r in names:
+            name = r["surface_raw"] or r["surface"]
+            lines.append(f"• {html.escape(name)} ×{r['count']}")
+    if edits:
+        lines += ["", f"<b>Правки фактов ({len(edits)})</b>"]
+        for r in edits:
+            link = message_link(r["message_id"]) if r["message_id"] else ""
+            what = html.escape((r["what_changed"] or "без пояснения")[:80])
+            lines.append(f'• <a href="{link}">пост {r["message_id"]}</a>: {what}'
+                         if link else f"• {what}")
+    if not names and not edits:
+        return "<b>Ждёт решения</b>\n\nОчередь пуста."
+
+    # Сводку отправляем сами, до предложений: иначе список придёт после них
+    # и читать его будет уже поздно.
+    if names:
+        lines += ["", "<i>Ниже — то же самое кнопками, действовать на них.</i>"]
+    notify_owner("\n".join(lines))
+
+    with connect() as conn:
+        if names:
+            conn.execute(
+                "UPDATE entity_unresolved SET notified_at = NULL "
+                "WHERE ignored_at IS NULL"
+            )
+            notify_new_unresolved(conn)
+        if edits:
+            resend_pending(conn)
+    return ""  # уже ответили сами
 
 
 COMMANDS = {
@@ -143,7 +190,11 @@ COMMANDS = {
 
 
 def run_command(text: str) -> str:
-    """Выполняет команду и возвращает текст ответа."""
+    """Выполняет команду и возвращает текст ответа.
+
+    Пустая строка означает «команда ответила сама»: так делают те, кому
+    нужен свой порядок сообщений или свои кнопки.
+    """
     name = text.strip().split()[0].split("@")[0].lower()
     fn = COMMANDS.get(name)
     if fn is None:

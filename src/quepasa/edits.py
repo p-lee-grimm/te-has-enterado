@@ -111,6 +111,14 @@ def send_for_review(conn, post: dict[str, Any], draft: dict[str, Any]) -> None:
         (draft["post_id"], draft["new_header"], draft["what_changed"]),
     ).fetchone()["id"]
 
+    _send(edit_id, post, draft)
+
+
+def _send(edit_id: int, post: dict[str, Any], draft: dict[str, Any]) -> None:
+    """Сообщение о расхождении с кнопками. Отдельно от вставки в базу:
+    ту же правку надо уметь показать заново, не заводя вторую запись."""
+    from .telegram import message_link, notify_owner
+
     link = message_link(post["message_id"])
     esc = html.escape
     text = "\n".join([
@@ -133,6 +141,22 @@ def send_for_review(conn, post: dict[str, Any], draft: dict[str, Any]) -> None:
             {"text": "✖️ Оставить", "callback_data": f"edit:skip:{edit_id}"},
         ]]
     })
+
+
+def resend_pending(conn, limit: int = 10) -> int:
+    """Показывает заново правки, ждущие решения, с их прежними id."""
+    rows = conn.execute(
+        """
+        SELECT e.id, e.new_header, e.what_changed, p.header_md, p.message_id
+        FROM post_edits e JOIN posts p ON p.id = e.post_id
+        WHERE e.status = 'pending' ORDER BY e.id LIMIT %s
+        """,
+        (limit,),
+    ).fetchall()
+    for r in rows:
+        _send(r["id"], {"header_md": r["header_md"], "message_id": r["message_id"]},
+              {"new_header": r["new_header"], "what_changed": r["what_changed"] or ""})
+    return len(rows)
 
 
 def apply_edit(conn, edit_id: int) -> bool:
