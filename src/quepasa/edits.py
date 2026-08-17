@@ -101,8 +101,6 @@ def check_post(conn, post: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def send_for_review(conn, post: dict[str, Any], draft: dict[str, Any]) -> None:
-    from .telegram import message_link, notify_owner
-
     edit_id = conn.execute(
         """
         INSERT INTO post_edits (post_id, new_header, what_changed)
