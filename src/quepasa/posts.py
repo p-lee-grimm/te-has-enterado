@@ -1286,9 +1286,15 @@ def backfill_entity_context(entity_id: str, dry_run: bool = True) -> dict[str, A
                 "UPDATE entity_mentions SET shown = TRUE "
                 "WHERE post_id = %s AND entity_id = %s", (post["id"], entity_id),
             )
+            # Не now(): пояснение легло в пост, вышедший раньше, и читатель
+            # видел его тогда же. Отметка «объяснено сейчас» запирает сущность
+            # кулдауном на месяц вперёд за показ, которого сегодня не было, —
+            # разовая заливка по всему реестру так вычистила контекст из
+            # четырёх постов из пяти.
             conn.execute(
-                "UPDATE entities SET last_explained_at = now() WHERE id = %s",
-                (entity_id,),
+                "UPDATE entities SET last_explained_at = "
+                "GREATEST(COALESCE(last_explained_at, %s), %s) WHERE id = %s",
+                (post["published_at"], post["published_at"], entity_id),
             )
         stats["edited"] += 1
         stats["posts"].append({"post_id": post["id"], "message_id": post["message_id"]})

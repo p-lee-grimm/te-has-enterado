@@ -542,3 +542,42 @@ class TestSlavicNames:
         for name in ("Pedro Sánchez", "Rafa Jódar", "Laura Cabanes",
                      "Carlos Martin", "Ana Marin", "Óscar Puente"):
             assert not _is_slavic(name), name
+
+
+class TestCooldownStamp:
+    """Отметка «объяснено» — это дата поста, а не дата правки.
+
+    Заливка по всему реестру ставила now() за пояснение, добавленное в пост
+    недельной давности. При кулдауне в 35 дней это заперло сорок сущностей
+    до конца сентября: контекст пропал из четырёх постов из пяти, и заметно
+    это стало только по каналу.
+    """
+
+    Conn = TestBackfillSelection.Conn
+
+    def test_stamp_is_the_post_date(self, monkeypatch):
+        import datetime
+        import quepasa.facts as facts
+        import quepasa.posts as posts_mod
+
+        published = datetime.datetime(2026, 8, 11, 12, 0)
+        post = {"id": 1, "cluster_id": 10, "message_id": 101,
+                "header_md": "**Óscar Puente и король**", "category": "политика",
+                "one_sided": False, "significance": "", "related_md": "",
+                "entity_ids": [], "entity_context": {}, "published_at": published}
+        conn = self.Conn(CARD, [post])
+        monkeypatch.setattr(posts_mod, "connect", lambda *a, **k: conn)
+        monkeypatch.setattr(posts_mod, "cluster_articles", lambda c, cid: ART)
+        monkeypatch.setattr(posts_mod, "edit_message_text", lambda *a, **k: None)
+        monkeypatch.setattr(posts_mod, "env", lambda *a, **k: "-100123")
+        monkeypatch.setattr(facts, "has_pool", lambda c, eid: True)
+        monkeypatch.setattr(
+            facts, "build_context",
+            lambda c, e, topic, headline, usage: CTX["oscar-puente"])
+
+        posts_mod.backfill_entity_context("oscar-puente", dry_run=False)
+
+        stamps = [params for sql, params in conn.updates
+                  if "last_explained_at" in sql]
+        assert stamps, "отметка вообще не ставится"
+        assert published in stamps[0], f"вместо даты поста ушло {stamps[0]}"
