@@ -545,12 +545,13 @@ class TestSlavicNames:
 
 
 class TestCooldownStamp:
-    """Отметка «объяснено» — это дата поста, а не дата правки.
+    """Заливка в архив не тратит кулдаун.
 
-    Заливка по всему реестру ставила now() за пояснение, добавленное в пост
-    недельной давности. При кулдауне в 35 дней это заперло сорок сущностей
-    до конца сентября: контекст пропал из четырёх постов из пяти, и заметно
-    это стало только по каналу.
+    Кулдаун отвечает на вопрос «давно ли мы объясняли это читателю в его
+    ленте». Заливка дописывает блок в пост, который читатель уже пролистал,
+    — нового показа в ленте не случилось. Отметка «объяснено только что»
+    за такой показ заперла 38 сущностей из 65 на месяц вперёд, и контекст
+    пропал из четырёх новых постов из пяти.
     """
 
     Conn = TestBackfillSelection.Conn
@@ -577,7 +578,7 @@ class TestCooldownStamp:
 
         posts_mod.backfill_entity_context("oscar-puente", dry_run=False)
 
-        stamps = [params for sql, params in conn.updates
-                  if "last_explained_at" in sql]
-        assert stamps, "отметка вообще не ставится"
-        assert published in stamps[0], f"вместо даты поста ушло {stamps[0]}"
+        stamps = [sql for sql, _ in conn.updates if "last_explained_at" in sql]
+        assert not stamps, "заливка в архив не должна тратить кулдаун"
+        assert any("entity_context" in sql for sql, _ in conn.updates), \
+            "сам пост при этом обязан обновиться"
