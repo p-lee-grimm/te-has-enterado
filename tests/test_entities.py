@@ -51,15 +51,13 @@ def ctx(*ids, text="Пояснение"):
 
 
 class FakeConn:
-    """Кулдаун и наличие пула считаются в SQL — подменяем ответ."""
+    """Наличие пула считается в SQL — подменяем ответ."""
     def __init__(self, days=999, pool=True):
         self.days, self.pool = days, pool
 
     def execute(self, sql, params=None):
-        if "entity_facts" in sql:
-            pool = self.pool
-            return type("R", (), {"fetchone": lambda s: 1 if pool else None})()
-        return type("R", (), {"fetchone": lambda s: {"d": self.days}})()
+        pool = self.pool
+        return type("R", (), {"fetchone": lambda s: 1 if pool else None})()
 
 
 class TestDisplayRules:
@@ -74,15 +72,30 @@ class TestDisplayRules:
     def test_never_explain_respected(self):
         assert pick_for_display(FakeConn(), [ent("a", never=True)]) == []
 
-    def test_cooldown_blocks_recent(self):
-        import datetime
-        recent = datetime.datetime(2026, 8, 1)
-        assert pick_for_display(FakeConn(days=3), [ent("a", last=recent)]) == []
+    def test_recently_explained_is_still_shown(self):
+        """Кулдауна нет: никто не читает все посты подряд.
 
-    def test_cooldown_expired_allows(self):
+        Тот, кто открыл канал сегодня, вчерашнего объяснения не видел,
+        а платит за него непонятным именем.
+        """
         import datetime
-        old = datetime.datetime(2026, 1, 1)
-        assert len(pick_for_display(FakeConn(days=90), [ent("a", last=old)])) == 1
+        yesterday = datetime.datetime(2026, 8, 17, tzinfo=datetime.timezone.utc)
+        assert len(pick_for_display(FakeConn(), [ent("a", last=yesterday)])) == 1
+
+    def test_longest_unexplained_goes_first(self):
+        """Давность решает очередь, а не право показаться."""
+        import datetime
+        tz = datetime.timezone.utc
+        ents = [ent("fresh", last=datetime.datetime(2026, 8, 17, tzinfo=tz)),
+                ent("old", last=datetime.datetime(2026, 1, 1, tzinfo=tz))]
+        assert pick_for_display(FakeConn(), ents)[0]["id"] == "old"
+
+    def test_never_explained_goes_before_explained(self):
+        import datetime
+        tz = datetime.timezone.utc
+        ents = [ent("seen", last=datetime.datetime(2026, 1, 1, tzinfo=tz)),
+                ent("unseen")]
+        assert pick_for_display(FakeConn(), ents)[0]["id"] == "unseen"
 
     def test_primary_before_secondary(self):
         ents = [ent("sec", salience="secondary"), ent("prim", salience="primary")]

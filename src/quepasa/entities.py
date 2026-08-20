@@ -176,34 +176,33 @@ def resolve_all(conn, extracted: list[dict[str, Any]], cluster_id: int | None = 
 def pick_for_display(conn, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Кому в этом посте собирать контекст.
 
-    Берём тех, у кого есть пул фактов, кто не помечен never_explain и кого
-    не объясняли недавно. Из оставшихся — не больше двух: primary вперёд,
-    при равенстве берём менее знакомую читателю (меньше упоминаний).
+    Берём тех, у кого есть пул фактов и кто не помечен never_explain.
+    Из оставшихся — не больше двух: primary вперёд, при равенстве вперёд
+    идёт тот, кого объясняли давнее, и уже при равенстве этого — менее
+    знакомый читателю (меньше упоминаний).
+
+    Кулдауна нет намеренно. Никто не читает все посты подряд: тот, кто
+    открыл канал сегодня, прошлого объяснения не видел, а платит за него
+    непонятным именем. Давность показа поэтому решает не «показывать ли
+    вообще», а только кого пустить вперёд, когда мест меньше, чем
+    кандидатов.
 
     Это ещё не показ: собранный контекст может не получиться (подходящих
     под тему фактов нет, сборка не прошла проверку), и тогда сущность
     в блок не попадёт. Читателя в этом случае держит role_gloss в теле поста.
     """
+    from datetime import datetime, timezone
+
     from .facts import has_pool
 
-    s = get_settings()
-    limit = int(s.get_path("entities.max_cards_per_post", 2))
-    cooldown = int(s.get_path("entities.explain_cooldown_days", 35))
+    limit = int(get_settings().get_path("entities.max_cards_per_post", 2))
+    long_ago = datetime.min.replace(tzinfo=timezone.utc)
 
-    ok: list[dict[str, Any]] = []
-    for e in entities:
-        if e["never_explain"] or not has_pool(conn, e["id"]):
-            continue
-        if e["last_explained_at"] is not None:
-            row = conn.execute(
-                "SELECT EXTRACT(EPOCH FROM (now() - %s))/86400 AS d",
-                (e["last_explained_at"],),
-            ).fetchone()
-            if float(row["d"]) < cooldown:
-                continue
-        ok.append(e)
-
-    ok.sort(key=lambda e: (e.get("salience") != "primary", e["mentions_count"]))
+    ok = [e for e in entities
+          if not e["never_explain"] and has_pool(conn, e["id"])]
+    ok.sort(key=lambda e: (e.get("salience") != "primary",
+                           e["last_explained_at"] or long_ago,
+                           e["mentions_count"]))
     return ok[:limit]
 
 
