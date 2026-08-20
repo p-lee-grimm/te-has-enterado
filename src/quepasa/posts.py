@@ -136,6 +136,15 @@ NAME_FIXES = [
     (re.compile(r"\bЭрк\b|\bЭРК\b"), "ERC"),
 ]
 
+# Устойчивые обмолвки модели по-русски. Не орфографический словарь: сюда
+# попадает только то, что вышло в канал и повторяется, — иначе список
+# превратится в свалку, которую никто не проверяет.
+#
+# «Теннист» ушёл в пост про Kyrgios дважды в трёх предложениях.
+WORD_FIXES = [
+    (re.compile(r"\bтеннист(\w*)", re.I), r"теннисист\1"),
+]
+
 
 # Приблизительная испанская транскрипция: нужна не для показа, а для
 # сравнения. «Leire Díez» -> «лейре диес», и кириллическое «Лейре Диез»
@@ -308,7 +317,24 @@ def fix_names(text: str) -> str:
         if fixed != out:
             log.info("Название приведено к испанскому написанию: %s", correct)
             out = fixed
+    for pattern, correct in WORD_FIXES:
+        fixed = pattern.sub(_keep_case(correct), out)
+        if fixed != out:
+            log.info("Исправлена обмолвка модели: %s", pattern.pattern)
+            out = fixed
     return out
+
+
+def _keep_case(replacement: str):
+    """Замена, сохраняющая заглавную букву исходника.
+
+    Слово чаще всего стоит первым в заголовке, и подстановка в нижнем
+    регистре превратила бы «Теннист отстранён» в «теннисист отстранён».
+    """
+    def sub(m: re.Match) -> str:
+        out = m.expand(replacement)
+        return out[:1].upper() + out[1:] if m.group(0)[:1].isupper() else out
+    return sub
 
 
 def clean_significance(text: str) -> str:

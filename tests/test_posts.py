@@ -289,3 +289,25 @@ class TestNoLinkCap:
         """Владелец попросил показывать все ссылки."""
         from quepasa.config import get_settings
         assert get_settings().get_path("autopost.max_links_per_post") == 0
+
+
+class TestWordFixes:
+    """Устойчивые обмолвки модели по-русски.
+
+    «Теннист Nick Kyrgios отстранён…» ушло в канал: слово стояло дважды
+    в трёх предложениях, то есть модель ошибается в нём стабильно.
+    """
+
+    def test_typo_fixed_in_all_forms(self):
+        from quepasa.posts import fix_names
+        assert fix_names("Теннист отстранён") == "Теннисист отстранён"
+        assert fix_names("австралийский теннист") == "австралийский теннисист"
+        assert fix_names("двух теннистов") == "двух теннисистов"
+
+    def test_correct_spelling_untouched(self):
+        from quepasa.posts import fix_names
+        assert fix_names("теннисист Nick Kyrgios") == "теннисист Nick Kyrgios"
+
+    def test_other_words_untouched(self):
+        from quepasa.posts import fix_names
+        assert fix_names("теннисный турнир") == "теннисный турнир"
