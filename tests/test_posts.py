@@ -311,3 +311,70 @@ class TestWordFixes:
     def test_other_words_untouched(self):
         from quepasa.posts import fix_names
         assert fix_names("теннисный турнир") == "теннисный турнир"
+
+
+class TestTopicQuota:
+    """Доли тем в канале.
+
+    Правило допуска отбирает по числу изданий и разбросу полюсов, и этого
+    мало: пожары и трансферы пишут все и одинаково, а экономический сюжет
+    должен ещё дождаться, чтобы его заметили с разных сторон. За первые
+    десять дней канала так набралось 33% происшествий и 23% спорта.
+    """
+
+    class Conn:
+        def __init__(self, total, same):
+            self.total, self.same = total, same
+
+        def execute(self, sql, params=None):
+            row = {"total": self.total, "same": self.same}
+            return type("R", (), {"fetchone": lambda s: row})()
+
+    def test_topic_without_cap_always_passes(self):
+        from quepasa.posts import topic_quota_left
+        ok, why = topic_quota_left(self.Conn(50, 50), "политика")
+        assert ok and why == ""
+
+    def test_under_the_cap_passes(self):
+        from quepasa.posts import topic_quota_left
+        ok, _ = topic_quota_left(self.Conn(50, 4), "спорт")
+        assert ok, "8% при пределе 10%"
+
+    def test_at_the_cap_blocks(self):
+        from quepasa.posts import topic_quota_left
+        ok, why = topic_quota_left(self.Conn(50, 5), "спорт")
+        assert not ok and "10%" in why
+
+    def test_incidents_have_their_own_cap(self):
+        from quepasa.posts import topic_quota_left
+        assert topic_quota_left(self.Conn(50, 9), "происшествия")[0]
+        assert not topic_quota_left(self.Conn(50, 10), "происшествия")[0]
+
+    def test_young_channel_is_not_capped(self):
+        """Пока постов мало, доля скачет от одного поста, и первый же
+        спортивный сюжет закрыл бы тему навсегда."""
+        from quepasa.posts import topic_quota_left
+        ok, _ = topic_quota_left(self.Conn(5, 5), "спорт")
+        assert ok
+
+    def test_case_and_spaces_ignored(self):
+        from quepasa.posts import topic_quota_left
+        assert not topic_quota_left(self.Conn(50, 25), " Спорт ")[0]
+
+
+class TestTopicSplit:
+    """Спорт и культура — разные теги.
+
+    Под общим «культура/спорт» ограничить спорт нельзя, не задев некрологи
+    и фестивали: из сорока таких постов спортивных был тридцать один.
+    """
+
+    def test_both_have_their_own_hashtag(self):
+        from quepasa.posts import hashtags
+        assert hashtags("спорт", None) == "#спорт"
+        assert hashtags("культура", None) == "#культура"
+
+    def test_old_combined_tag_still_renders(self):
+        """Вышедшие посты пересобираются тем же кодом и не должны терять тег."""
+        from quepasa.posts import hashtags
+        assert hashtags("культура/спорт", None) == "#культура_и_спорт"

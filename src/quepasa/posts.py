@@ -83,6 +83,13 @@ TOPIC_HASHTAG = {
     "общество": "общество",
     "эмиграция": "эмиграция",
     "происшествия": "происшествия",
+    "спорт": "спорт",
+    "культура": "культура",
+    # Тег, которым спорт и культура жили одной темой. Оставлен ради уже
+    # вышедших постов: они пересобираются тем же кодом, и без него потеряли бы
+    # хэштег. Новые посты его не получают — доли тем задаются по отдельности,
+    # а под общим тегом «культура/спорт» ограничить спорт нельзя, не задев
+    # некрологи и фестивали.
     "культура/спорт": "культура_и_спорт",
 }
 
@@ -1614,6 +1621,7 @@ def _cluster_pool(conn, *, ignore_time: bool = False,
     rows = conn.execute(
         f"""
         SELECT c.id AS cluster_id,
+               c.topic                     AS topic,
                count(DISTINCT a.source_id) AS n_sources,
                count(*)                    AS n_articles,
                min(a.published_at)         AS first_at,
@@ -1640,8 +1648,8 @@ def _cluster_pool(conn, *, ignore_time: bool = False,
           AND (c.expired_at IS NULL OR %(include_expired)s)
           -- сюжет, ушедший в дайджест, отдельным постом уже не выйдет (§5)
           AND (p.id IS NULL OR p.status = 'published')
-        GROUP BY c.id, p.id, p.status, p.published_at, p.n_articles_at_publish,
-                 p.message_id
+        GROUP BY c.id, c.topic, p.id, p.status, p.published_at,
+                 p.n_articles_at_publish, p.message_id
         HAVING TRUE {age_clause}
         """,
         {"min_age": min_age, "include_expired": include_expired},
@@ -1849,6 +1857,54 @@ def digest_clusters(conn, *, ignore_time: bool = False) -> list[dict[str, Any]]:
     return picked[:max_lines]
 
 
+def topic_quota_left(conn, topic: str) -> tuple[bool, str]:
+    """Не перебрала ли тема свою долю канала.
+
+    Правило автопостинга отбирает по числу изданий и разбросу полюсов, и
+    этого мало: пожары, трансферы и утопления пишут все и одинаково, поэтому
+    ветку «≥N источников» они проходят почти автоматически, а экономический
+    сюжет должен ещё дождаться, чтобы его заметили с разных сторон. За первые
+    десять дней канала так набралось 33% происшествий и 23% спорта — больше,
+    чем политики и экономики вместе.
+
+    Доля считается по последним N постам, а не за календарный период: окно
+    едет вместе с каналом, и как только спортивные посты вытесняются из него
+    новыми, тема снова получает право на выход. Жёсткого «не больше одного
+    в день» здесь нет намеренно — при живом чемпионате он молчал бы сутками,
+    а при пустой неделе всё равно пропускал бы норму.
+    """
+    s = get_settings()
+    caps = s.get_path("autopost.topic_share.max", {}) or {}
+    cap = caps.get((topic or "").strip().lower())
+    if cap is None:
+        return True, ""
+
+    window = int(s.get_path("autopost.topic_share.window_posts", 50))
+    floor = int(s.get_path("autopost.topic_share.min_posts", 12))
+
+    row = conn.execute(
+        """
+        SELECT count(*) AS total,
+               count(*) FILTER (WHERE category = %s) AS same
+        FROM (SELECT category FROM posts WHERE status = 'published'
+              ORDER BY published_at DESC LIMIT %s) recent
+        """,
+        (topic, window),
+    ).fetchone()
+
+    total, same = int(row["total"]), int(row["same"])
+    # На молодом канале доля скачет от одного поста: пока постов мало,
+    # квота молчит, иначе первый же спортивный сюжет закроет тему навсегда.
+    if total < floor:
+        return True, ""
+
+    share = same / total
+    if share < float(cap):
+        return True, ""
+    return False, (f"тема «{topic}» занимает {share:.0%} последних {total} постов "
+                   f"при пределе {float(cap):.0%}")
+
+
 def autopost_enabled() -> bool:
     """Включена ли автопубликация.
 
@@ -1950,13 +2006,53 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
     sound_cap = int(s.get_path("autopost.sound.max_per_day", 2))
     granted = 0  # сколько звуков выдано в этом прогоне
 
-    for row in candidates[:room]:
+    # Идём по кандидатам дальше квоты и останавливаемся, набрав room. Раньше
+    # список резался по room сразу, и отказ по любой причине просто терял
+    # место: отсечь спорт значило выпустить на один пост меньше, а не
+    # выпустить вместо него политику.
+    #
+    # Число обращений к модели при этом ограничено: каждый кандидат — это
+    # вызов за заголовок, и без потолка прогон при неудачном подборе перебрал
+    # бы весь пул.
+    max_calls = int(s.get_path("autopost.max_header_calls_per_run", 0)) or room * 4
+    taken = calls = 0
+
+    for row in candidates:
+        if taken >= room or calls >= max_calls:
+            break
         cid = row["cluster_id"]
+
+        # Тема, уже известная по прошлому прогону, отсекается без модели:
+        # иначе сюжет, отклонённый по квоте, каждые полчаса генерировался бы
+        # заново и заново отклонялся.
+        if row.get("topic"):
+            with connect() as conn:
+                ok, why = topic_quota_left(conn, row["topic"])
+            if not ok:
+                log.info("Сюжет %s пропущен без обращения к модели: %s", cid, why)
+                stats["over_quota"] = stats.get("over_quota", 0) + 1
+                continue
+
+        calls += 1
         try:
             header, topic, meta = generate_header(cid)
         except Exception as exc:  # noqa: BLE001 — один сюжет не роняет остальные
             log.warning("Сюжет %s: заголовок не сгенерировался: %s", cid, exc)
             stats["errors"] += 1
+            continue
+
+        # тему запоминаем на сюжете: она понадобится следующему прогону,
+        # чтобы не платить за неё второй раз
+        if topic:
+            with connect() as conn:
+                conn.execute("UPDATE clusters SET topic = %s WHERE id = %s",
+                             (topic, cid))
+
+        with connect() as conn:
+            ok, why = topic_quota_left(conn, topic)
+        if not ok:
+            log.info("Сюжет %s не опубликован: %s", cid, why)
+            stats["over_quota"] = stats.get("over_quota", 0) + 1
             continue
 
         # scope пригодится вечернему посту — сохраняем на кластере
@@ -2015,6 +2111,7 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
             "headline": header.split("\n")[0].strip("* "),
         })
 
+        taken += 1
         if dry_run:
             continue
 
