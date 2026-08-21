@@ -378,3 +378,39 @@ class TestTopicSplit:
         """Вышедшие посты пересобираются тем же кодом и не должны терять тег."""
         from quepasa.posts import hashtags
         assert hashtags("культура/спорт", None) == "#культура_и_спорт"
+
+
+class TestUnpublishChain:
+    """Снятый пост не должен оставаться концом цепочки продолжений.
+
+    Следующий пост сюжета уходит реплаем на last_post_message_id. Если там
+    записано удалённое сообщение, Telegram откажет в отправке — и сюжет
+    молча перестанет выходить.
+    """
+
+    class Conn:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, q, params=None):
+            self.sql.append((" ".join(q.split()), params))
+            row = {"id": 7, "message_id": 125}
+            return type("R", (), {"fetchone": lambda s: row})()
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def test_chain_is_rewound(self, monkeypatch):
+        import quepasa.posts as posts_mod
+        import quepasa.telegram as tg
+        conn = self.Conn()
+        monkeypatch.setattr(posts_mod, "connect", lambda *a, **k: conn)
+        monkeypatch.setattr(posts_mod, "env", lambda *a, **k: "-100123")
+        monkeypatch.setattr(tg, "delete_message", lambda *a, **k: None)
+
+        posts_mod.unpublish(7)
+
+        chain = [(q, p) for q, p in conn.sql
+                 if "clusters" in q and "last_post_message_id" in q]
+        assert chain, "цепочка сюжета осталась указывать на удалённое сообщение"
+        assert chain[0][1] == (125,)

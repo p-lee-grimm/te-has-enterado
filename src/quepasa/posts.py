@@ -1002,6 +1002,21 @@ def unpublish(post_id: int) -> str:
             "UPDATE posts SET status = 'skipped', message_id = NULL WHERE id = %s",
             (post_id,),
         )
+        # Цепочка продолжений ведётся по кластеру: следующий пост сюжета
+        # уходит реплаем на last_post_message_id. Если снятое сообщение
+        # осталось там записанным, Telegram откажет в отправке — сюжет
+        # молча перестанет выходить. Отматываем на предыдущий живой пост.
+        conn.execute(
+            """
+            UPDATE clusters SET last_post_message_id = (
+                SELECT max(p.message_id) FROM posts p
+                WHERE p.cluster_id = clusters.id
+                  AND p.status = 'published' AND p.message_id IS NOT NULL
+            )
+            WHERE last_post_message_id = %s
+            """,
+            (post["message_id"],),
+        )
     log.info("Пост %s снят из канала владельцем", post_id)
     return "Снято"
 
