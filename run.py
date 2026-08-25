@@ -51,6 +51,8 @@ def main() -> int:
     ap.add_argument("--refresh-facts", dest="refresh_facts",
                     action="store_true",
                     help="снять просроченные факты и перепроверить пул по очереди")
+    ap.add_argument("--adopt-queue", dest="adopt_queue", action="store_true",
+                    help="завести имена из очереди и разнести пояснения по постам")
     ap.add_argument("--audit-facts", dest="audit_facts", action="store_true",
                     help="выборка фактов недели владельцу на сверку с цитатой")
     ap.add_argument("--check-facts", action="store_true",
@@ -114,6 +116,17 @@ def main() -> int:
     if args.refresh_facts:
         from quepasa.factops import refresh_stale
         log.info("Пул фактов: %s", refresh_stale(dry_run=args.dry_run))
+        return 0
+
+    if args.adopt_queue:
+        from quepasa.factops import adopt_queue, adopt_report
+        from quepasa.telegram import notify_owner
+        st = adopt_queue(dry_run=args.dry_run)
+        log.info("Очередь: %s", {k: v for k, v in st.items() if k != "items"})
+        if not args.dry_run:
+            report = adopt_report(st)
+            if report:
+                notify_owner(report)
         return 0
 
     if args.audit_facts:

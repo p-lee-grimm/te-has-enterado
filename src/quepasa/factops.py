@@ -270,3 +270,91 @@ def retire(fact_id: int) -> bool:
     _rollback(row["entity_id"])
     log.info("Факт %s снят владельцем", fact_id)
     return True
+
+
+# --------------------------------------------------- очередь без участия рук
+
+
+def adopt_queue(dry_run: bool = True, limit: int | None = None) -> dict[str, Any]:
+    """Заводит имена из очереди сама и разносит пояснения по постам.
+
+    Ждать кнопки по каждому имени нельзя: их десяток в сутки, а пост с
+    неизвестным читателю именем выходит сейчас, а не когда владелец дойдёт
+    до очереди. Поэтому сущность заводится сама, пул собирается по лестнице
+    источников с обязательной цитатой под каждым фактом, и пояснение уходит
+    в уже вышедшие посты.
+
+    Владелец получает результат постфактум: список заведённых с фактами.
+    Неверный факт правится ответом, лишняя сущность снимается кнопкой —
+    защита здесь не в подтверждении, а в быстром откате.
+    """
+    from .entities import act_on_unresolved
+    from .posts import backfill_entity_context
+
+    s = get_settings()
+    min_count = int(s.get_path("entities.notify_min_count", 1))
+    limit = limit or int(s.get_path("entities.adopt_max_per_run", 5))
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, surface_raw, surface FROM entity_unresolved
+            WHERE ignored_at IS NULL AND count >= %s
+            ORDER BY count DESC, last_seen DESC LIMIT %s
+            """,
+            (min_count, limit),
+        ).fetchall()
+
+    stats: dict[str, Any] = {"seen": len(rows), "adopted": 0, "aliased": 0,
+                             "empty": 0, "posts": 0, "items": []}
+    if not rows:
+        return stats
+
+    for row in rows:
+        name = row["surface_raw"] or row["surface"]
+        if dry_run:
+            log.info("DRY-RUN: завели бы %s", name)
+            continue
+
+        with connect() as conn:
+            entity_id, _answer, _ctx = act_on_unresolved(conn, row["id"], "add")
+        if entity_id is None:
+            # имя оказалось другим написанием уже заведённой сущности
+            stats["aliased"] += 1
+            continue
+
+        res = refresh_entity(entity_id, dry_run=False, announce=False)
+        facts = res.get("facts") or []
+        if not facts:
+            # штатный исход: роль в тексте поста читателю уже всё сказала
+            stats["empty"] += 1
+            stats["items"].append((name, entity_id, 0, 0))
+            continue
+
+        back = backfill_entity_context(entity_id, dry_run=False)
+        posts = int(back.get("edited", 0)) + int(res.get("posts_updated", 0))
+        stats["adopted"] += 1
+        stats["posts"] += posts
+        stats["items"].append((name, entity_id, len(facts), posts))
+
+    log.info("Очередь разобрана: заведено %s, написаний %s, без фактов %s, "
+             "постов дополнено %s", stats["adopted"], stats["aliased"],
+             stats["empty"], stats["posts"])
+    return stats
+
+
+def adopt_report(stats: dict[str, Any]) -> str:
+    """Отчёт постфактум: что завелось и куда попало."""
+    if not stats.get("items"):
+        return ""
+    lines = ["<b>Заведены сами</b>", ""]
+    for name, entity_id, n_facts, posts in stats["items"]:
+        if n_facts:
+            lines.append(f"• <b>{html.escape(name)}</b> — фактов {n_facts}"
+                         + (f", дополнено постов {posts}" if posts else ""))
+        else:
+            lines.append(f"• {html.escape(name)} — источников не нашлось, "
+                         f"пояснения не будет")
+    lines += ["", "<i>Неверный факт — ответь на него реплаем. "
+              "Лишнюю сущность снимет кнопка в аудите.</i>"]
+    return "\n".join(lines)
