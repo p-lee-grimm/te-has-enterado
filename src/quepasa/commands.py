@@ -125,22 +125,14 @@ def _queue() -> str:
     с кнопками, что приходят сами: действовать надо на них.
     """
     from .db import connect
-    from .edits import resend_pending
     from .entities import notify_new_unresolved
-    from .telegram import message_link, notify_owner
+    from .telegram import notify_owner
 
     with connect() as conn:
         names = conn.execute(
             """
             SELECT surface_raw, surface, count FROM entity_unresolved
             WHERE ignored_at IS NULL ORDER BY count DESC, last_seen DESC LIMIT 20
-            """
-        ).fetchall()
-        edits = conn.execute(
-            """
-            SELECT e.id, e.what_changed, p.message_id
-            FROM post_edits e JOIN posts p ON p.id = e.post_id
-            WHERE e.status = 'pending' ORDER BY e.id LIMIT 20
             """
         ).fetchall()
 
@@ -150,14 +142,7 @@ def _queue() -> str:
         for r in names:
             name = r["surface_raw"] or r["surface"]
             lines.append(f"• {html.escape(name)} ×{r['count']}")
-    if edits:
-        lines += ["", f"<b>Правки фактов ({len(edits)})</b>"]
-        for r in edits:
-            link = message_link(r["message_id"]) if r["message_id"] else ""
-            what = html.escape((r["what_changed"] or "без пояснения")[:80])
-            lines.append(f'• <a href="{link}">пост {r["message_id"]}</a>: {what}'
-                         if link else f"• {what}")
-    if not names and not edits:
+    if not names:
         return "<b>Ждёт решения</b>\n\nОчередь пуста."
 
     # Сводку отправляем сами, до предложений: иначе список придёт после них
@@ -173,8 +158,6 @@ def _queue() -> str:
                 "WHERE ignored_at IS NULL"
             )
             notify_new_unresolved(conn)
-        if edits:
-            resend_pending(conn)
     return ""  # уже ответили сами
 
 

@@ -114,28 +114,6 @@ class TestEditWindowConfig:
         assert float(v).is_integer()
 
 
-class TestSemanticEdits:
-    """Смысловая правка — только через ревью, и всегда со строкой «Обновлено»."""
-
-    def test_updated_line_appended(self):
-        from quepasa.edits import UPDATED_PREFIX
-        header = "**Заголовок**"
-        what = "число погибших выросло с 90 до 111"
-        out = f"{header}\n\n_{UPDATED_PREFIX} {what}_"
-        assert UPDATED_PREFIX in out and what in out
-
-    def test_edit_window_is_integer_hours(self):
-        from quepasa.config import get_settings
-        v = get_settings().get_path("autopost.edit_window_hours")
-        assert float(v).is_integer(), "make_interval принимает целое"
-
-    def test_edit_window_within_link_window(self):
-        """Смысловая правка не должна пережить окно механических правок."""
-        from quepasa.config import get_settings
-        s = get_settings()
-        assert (s.get_path("autopost.edit_window_hours")
-                <= s.get_path("autopost.link_window_hours"))
-
 
 class TestReviewCallbacks:
     """Формат callback_data: он ограничен 64 байтами (§10)."""
@@ -208,44 +186,66 @@ class TestNotModifiedIsNotAnError:
             assert "not modified" not in msg
 
 
-class TestEditKeepsNameRules:
-    """Смысловая правка идёт мимо generate_header — правила имён нужны и там.
 
-    Живой случай: пост 111 после правки получил «ПП» вместо PP, хотя
-    в исходном посте всё было верно. Правка собирает шапку заново, своим
-    вызовом модели, и раньше ни fix_names, ни restore_latin_names к ней
-    не применялись.
+
+class TestUpdLine:
+    """Пост не переписывается, а дополняется строкой UPD.
+
+    Раньше расхождение приносило владельцу предложение заменить текст,
+    и до нажатия пост врал. Теперь под постом появляется строка
+    «UPD (21:30, El País): погибших 111» — читатель видит и исходное,
+    и новое, а тот, кто переслал пост, не обнаружит подмену.
     """
 
-    def test_party_name_fixed_in_edit(self, monkeypatch):
+    HEAD = "**Пожар в Уэске**\n\nОгонь охватил 500 гектаров."
+
+    def test_duplicate_update_not_repeated(self):
+        """Источники повторяют новое число сутки подряд."""
+        from quepasa.edits import already_said
+        head = self.HEAD + "\n\n_UPD (21:30, El País): погибших 111_"
+        assert already_said(head, "погибших 111")
+
+    def test_wording_difference_still_counts_as_said(self):
+        from quepasa.edits import already_said
+        head = self.HEAD + "\n\n_UPD (21:30, ABC): задержаны двое_"
+        assert already_said(head, "задержаны двое.")
+
+    def test_new_update_passes(self):
+        from quepasa.edits import already_said
+        head = self.HEAD + "\n\n_UPD (21:30, ABC): задержаны двое_"
+        assert not already_said(head, "погибших 111")
+
+    def test_plain_text_is_not_an_update(self):
+        """Совпадение с телом поста — не повод считать приписку сделанной."""
+        from quepasa.edits import already_said
+        assert not already_said(self.HEAD, "огонь охватил 500 гектаров")
+
+    def test_unknown_source_replaced_with_real_one(self, monkeypatch):
+        """Издание, которого нет в списке, — признак выдумки."""
         import quepasa.edits as edits
-        monkeypatch.setattr(edits, "_diff_call", lambda md, titles, usage: {
-            "changed": True, "headline": "ПП требует отставки",
-            "lead": "Народная партия настаивает.", "what": "требование от ПП"})
-        post = {"id": 1, "cluster_id": 2, "header_md": "**Было**"}
+        monkeypatch.setattr(edits, "_diff_call", lambda md, pairs, usage: {
+            "changed": True, "what": "погибших 111", "source": "Выдуманная газета"})
 
         class Conn:
             def execute(self, sql, params=None):
                 return type("R", (), {"fetchall": lambda s: [
-                    {"title": "El PP pide la dimisión"}]})()
+                    {"title": "Incendio en Huesca", "source": "El País"}]})()
 
-        draft = edits.check_post(Conn(), post)
-        assert "PP требует" in draft["new_header"]
-        assert "ПП" not in draft["new_header"]
-        assert "Народная партия" not in draft["new_header"]
-        assert "ПП" not in draft["what_changed"]
+        upd = edits.check_post(Conn(), {"id": 1, "cluster_id": 2,
+                                        "header_md": self.HEAD})
+        assert upd["source"] == "El País"
 
-    def test_transcribed_name_restored_in_edit(self, monkeypatch):
+    def test_party_name_fixed_in_update(self, monkeypatch):
+        """Приписка идёт своим вызовом модели, мимо generate_header."""
         import quepasa.edits as edits
-        monkeypatch.setattr(edits, "_diff_call", lambda md, titles, usage: {
-            "changed": True, "headline": "Педро Санчес выступил", "lead": "",
-            "what": "выступление"})
-        post = {"id": 1, "cluster_id": 2, "header_md": "**Было**"}
+        monkeypatch.setattr(edits, "_diff_call", lambda md, pairs, usage: {
+            "changed": True, "what": "ПП требует отставки", "source": "ABC"})
 
         class Conn:
             def execute(self, sql, params=None):
                 return type("R", (), {"fetchall": lambda s: [
-                    {"title": "Pedro Sánchez comparece en el Congreso"}]})()
+                    {"title": "El PP pide la dimisión", "source": "ABC"}]})()
 
-        draft = edits.check_post(Conn(), post)
-        assert "Pedro Sánchez" in draft["new_header"]
+        upd = edits.check_post(Conn(), {"id": 1, "cluster_id": 2,
+                                        "header_md": self.HEAD})
+        assert "PP" in upd["what"] and "ПП" not in upd["what"]

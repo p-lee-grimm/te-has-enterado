@@ -94,25 +94,6 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
         cq = upd.get("callback_query")
         data = (cq.get("data") or "") if cq else ""
 
-        if cq and data.startswith("edit:"):
-            from .edits import apply_edit
-
-            _, action, edit_id = data.split(":", 2)
-            with connect() as conn:
-                if action == "apply":
-                    ok = apply_edit(conn, int(edit_id))
-                    stats["edits_applied"] = stats.get("edits_applied", 0) + int(ok)
-                else:
-                    conn.execute(
-                        "UPDATE post_edits SET status='skipped', decided_at=now() "
-                        "WHERE id=%s", (int(edit_id),))
-                    stats["edits_skipped"] = stats.get("edits_skipped", 0) + 1
-            answer_callback(cq["id"], "Заменено" if action == "apply" else "Оставили")
-            msg = cq.get("message") or {}
-            if msg:
-                edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
-            continue
-
         if cq and data.startswith("post:"):
             from .posts import publish
 
