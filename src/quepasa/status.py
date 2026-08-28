@@ -106,12 +106,22 @@ def checks(data: dict[str, Any]) -> list[tuple[str, bool, str]]:
     page = data["post_age_h"]
     from .posts import autopost_enabled
 
+    from .config import get_settings
+
     enabled = autopost_enabled()
+    # Включённого переключателя мало: трое суток простоя эта проверка
+    # показывала как «в порядке», потому что смотрела только на него.
+    # К порогу тишины прибавляем ночь: окно закрыто с 21 до 9, и утром
+    # свежесть в 12 часов — норма, а не поломка.
+    limit = float(get_settings().get_path("autopost.silence_alert_hours", 6)) + 12
+    fresh = page is not None and page <= limit
     out.append((
         "публикация",
-        enabled,
+        enabled and fresh,
         ("выключена: autopost.enabled = false" if not enabled else
-         "постов не было" if page is None else f"последний пост {page:.1f} ч назад"),
+         "постов не было ни разу" if page is None else
+         f"последний пост {page:.1f} ч назад, а порог {limit:.0f}" if not fresh else
+         f"последний пост {page:.1f} ч назад"),
     ))
 
     q = data["queue"]

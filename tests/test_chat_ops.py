@@ -139,3 +139,37 @@ class TestSilenceWatchdog:
         """Сторож, пишущий каждые пять минут, перестают читать."""
         recent = "2026-08-28T10:00:00+02:00"
         assert not self._run(monkeypatch, hour=14, age_h=72.0, alerted=recent)
+
+
+class TestPublicationCheck:
+    """Включённого переключателя мало: он был включён все три дня простоя."""
+
+    @staticmethod
+    def _check(age_h, monkeypatch):
+        import quepasa.posts as posts
+        # переключатель здесь ни при чём: все три дня простоя он был включён
+        monkeypatch.setattr(posts, "autopost_enabled", lambda: True)
+        from quepasa.status import checks
+        data = {
+            "fetch_age_h": 0.1, "post_age_h": age_h,
+            "articles": {"last_fetch": None, "last_day": 900,
+                         "no_embedding": 0, "no_cluster": 0},
+            "feeds": {"silent": 0, "active": 17},
+            "posts": {"last_post": None},
+            "clusters": {"big": 20},
+            "queue": {"unresolved": 0, "drafts": 0, "edits": 0},
+        }
+        for name, ok, detail in checks(data):
+            if name == "публикация":
+                return ok, detail
+        raise AssertionError("проверки публикации нет")
+
+    def test_stale_publication_fails(self, monkeypatch):
+        ok, detail = self._check(78.9, monkeypatch)
+        assert not ok, "трое суток тишины — это не «в порядке»"
+        assert "порог" in detail
+
+    def test_overnight_gap_is_fine(self, monkeypatch):
+        """Окно закрыто с 21 до 9 — утром свежесть в 12 часов нормальна."""
+        ok, _ = self._check(12.0, monkeypatch)
+        assert ok
