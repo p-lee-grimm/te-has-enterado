@@ -87,3 +87,55 @@ class TestRareWords:
     def test_real_cases_would_surface(self, word):
         rows = [{"message_id": 9, "header_md": f"**Заголовок**\n\nтекст {word} текст"}]
         assert word in rare_words(rows)
+
+
+class TestSilenceWatchdog:
+    """Трёхдневный простой не должен пройти незамеченным.
+
+    25 августа --check-facts повис на сетевом чтении и держал лок publish.
+    Автопостинг не запускался трое суток: каждый следующий прогон видел
+    лок и уходил. Узнать об этом было неоткуда — статус смотрят руками.
+    """
+
+    @staticmethod
+    def _run(monkeypatch, hour, age_h, alerted=None):
+        import datetime as dt
+
+        import quepasa.status as st
+        import quepasa.telegram as tg
+        sent = []
+        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: sent.append(t))
+
+        class Conn:
+            def execute(self, sql, params=None):
+                if "max(published_at)" in sql:
+                    return type("R", (), {"fetchone": lambda s: {"h": age_h}})()
+                if "bot_state" in sql and sql.strip().startswith("SELECT"):
+                    row = {"value": alerted} if alerted else None
+                    return type("R", (), {"fetchone": lambda s: row})()
+                return type("R", (), {"fetchone": lambda s: None})()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        import quepasa.db as db
+        monkeypatch.setattr(db, "connect", lambda *a, **k: Conn())
+
+        from zoneinfo import ZoneInfo
+        now = dt.datetime(2026, 8, 28, hour, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+        st.watch_silence(now=now)
+        return sent
+
+    def test_alerts_inside_window(self, monkeypatch):
+        assert self._run(monkeypatch, hour=14, age_h=72.0)
+
+    def test_silent_outside_window(self, monkeypatch):
+        """Ночью тишина штатная — будить из-за неё нельзя."""
+        assert not self._run(monkeypatch, hour=3, age_h=72.0)
+
+    def test_silent_when_posts_are_fresh(self, monkeypatch):
+        assert not self._run(monkeypatch, hour=14, age_h=1.0)
+
+    def test_not_repeated_within_a_day(self, monkeypatch):
+        """Сторож, пишущий каждые пять минут, перестают читать."""
+        recent = "2026-08-28T10:00:00+02:00"
+        assert not self._run(monkeypatch, hour=14, age_h=72.0, alerted=recent)

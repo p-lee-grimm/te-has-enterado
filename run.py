@@ -162,6 +162,10 @@ def main() -> int:
         while True:
             try:
                 st = process_callbacks(timeout=args.poll_timeout)
+                # сторож молчания: проверка дешёвая, а трёхдневная тишина
+                # иначе снова пройдёт незамеченной
+                from quepasa.status import watch_silence
+                watch_silence()
                 if st["edited"] or st.get("taps") or st.get("retired"):
                     log.info("Ревью: правок %s, снято фактов %s, нажатий %s",
                              st["edited"], st.get("retired", 0), st.get("taps", 0))

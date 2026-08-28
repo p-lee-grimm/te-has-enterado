@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime, timezone
 from typing import Any
 
 from .db import connect
+
+log = logging.getLogger(__name__)
 
 
 def collect() -> dict[str, Any]:
@@ -118,3 +122,71 @@ def checks(data: dict[str, Any]) -> list[tuple[str, bool, str]]:
         f"правок {q['edits']}",
     ))
     return out
+
+
+# ------------------------------------------------------------------ сторож
+
+WATCH_KEY = "silence_alerted_at"
+
+
+def watch_silence(now=None) -> str | None:
+    """Сообщает владельцу, если канал молчит внутри окна публикации.
+
+    Три дня без постов прошли незамеченными: автопостинг не запускался,
+    потому что зависший прогон держал лок, а узнать об этом было неоткуда —
+    статус смотрят руками, а руками его никто не смотрит.
+
+    Сообщение шлётся один раз в сутки: сторож, который пишет каждые пять
+    минут, перестаёт читаться на второй час.
+    """
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    from .config import get_settings
+    from .db import connect
+    from .telegram import notify_owner
+
+    s = get_settings()
+    limit = float(s.get_path("autopost.silence_alert_hours", 6))
+    tz = ZoneInfo(s.require("render.timezone"))
+    # время параметром: иначе проверку окна не протестировать, а именно
+    # в ней легче всего ошибиться на час
+    now = now or _dt.now(tz)
+
+    lo = int(s.get_path("autopost.window_from_hour", 9))
+    hi = int(s.get_path("autopost.window_to_hour", 21))
+    # вне окна тишина штатная, и будить из-за неё нельзя
+    if not (lo <= now.hour < hi):
+        return None
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT EXTRACT(EPOCH FROM (now() - max(published_at))) / 3600 AS h
+            FROM posts WHERE status = 'published'
+            """
+        ).fetchone()
+        age = float(row["h"]) if row and row["h"] is not None else None
+        if age is None or age < limit:
+            return None
+
+        last = conn.execute(
+            "SELECT value FROM bot_state WHERE key = %s", (WATCH_KEY,)
+        ).fetchone()
+        if last:
+            since = (now - _dt.fromisoformat(last["value"])).total_seconds()
+            if since < 24 * 3600:
+                return None
+
+        conn.execute(
+            "INSERT INTO bot_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (WATCH_KEY, now.isoformat()),
+        )
+
+    text = (f"⚠️ <b>Канал молчит {age:.0f} ч</b>\n\n"
+            f"Сейчас окно публикации, а постов нет. Проверь /status — "
+            f"обычно это зависший прогон, который держит лок.")
+    notify_owner(text)
+    log.warning("Сторож: постов нет %.0f ч", age)
+    return text
