@@ -57,6 +57,10 @@ class TestMenuShape:
         # то, что просил владелец: контекст, перевод, дубликат, связь
         assert {"ctx", "tr", "dup", "rel"} <= codes
 
+    def test_no_plain_delete(self):
+        """Удалить пост в канале — два тапа; пересылка ради этого бессмысленна."""
+        assert "del" not in {c for c, _ in ACTIONS}
+
     def test_every_action_is_handled(self, monkeypatch):
         """Кнопка без обработчика — это тупик, который видно только в бою."""
         import quepasa.postmenu as pm
@@ -66,8 +70,6 @@ class TestMenuShape:
             monkeypatch.setattr(pm, "add_sources", lambda p: "ok")
             monkeypatch.setattr(pm, "related_candidates", lambda p: ("ok", None))
             monkeypatch.setattr(pm, "mark_duplicate", lambda p: "ok")
-            import quepasa.posts as posts
-            monkeypatch.setattr(posts, "unpublish", lambda p: "ok")
             res = pm.run_action(code, 1)
             assert res, f"действие {code} ничего не вернуло"
             assert "Не знаю действия" not in str(res)

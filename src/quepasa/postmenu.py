@@ -27,8 +27,11 @@ ACTIONS = [
     ("src",  "📰 Дополнить источниками"),
     ("rel",  "🔗 Связать с другой"),
     ("dup",  "🔁 Дубликат"),
-    ("del",  "🗑 Снять"),
 ]
+# «Снять» здесь нет намеренно: удалить пост в канале — два тапа, а
+# переслать его боту и нажать кнопку строго больше работы. Дубликат
+# остаётся, потому что делает то, чего канал не умеет: помечает сюжет,
+# чтобы он не вышел снова.
 
 
 def message_id_in(msg: dict[str, Any]) -> int | None:
@@ -260,8 +263,6 @@ def mark_duplicate(post_id: int) -> str:
 
 def run_action(code: str, post_id: int, extra: int | None = None):
     """Выполняет действие. Возвращает текст либо (текст, клавиатура)."""
-    from .posts import unpublish
-
     if code == "ctx":
         return add_context(post_id)
     if code == "tr":
@@ -274,8 +275,6 @@ def run_action(code: str, post_id: int, extra: int | None = None):
         return link_related(post_id, extra)
     if code == "dup":
         return mark_duplicate(post_id)
-    if code == "del":
-        return unpublish(post_id)
     if code == "nope":
         return "Оставили как есть."
     return f"Не знаю действия {html.escape(code)}."

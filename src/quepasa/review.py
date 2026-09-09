@@ -98,16 +98,6 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
             from .posts import publish
 
             _, action, cluster_id = data.split(":", 2)
-            if action == "del":
-                # снятие вышедшего поста: здесь приходит id поста, не сюжета
-                from .posts import unpublish
-
-                answer_callback(cq["id"], unpublish(int(cluster_id)))
-                stats["posts_removed"] = stats.get("posts_removed", 0) + 1
-                msg = cq.get("message") or {}
-                if msg:
-                    edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
-                continue
             if action == "pub":
                 try:
                     publish(int(cluster_id), dry_run=False)
