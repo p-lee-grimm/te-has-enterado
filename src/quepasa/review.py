@@ -161,6 +161,25 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
                 edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
             continue
 
+        # действие над вышедшим постом из меню
+        if cq and data.startswith("pa:"):
+            from .postmenu import run_action
+
+            parts = data.split(":")
+            code, post_id = parts[1], int(parts[2])
+            extra = int(parts[3]) if len(parts) > 3 else None
+            answer_callback(cq["id"], "Делаю…")
+            msg = cq.get("message") or {}
+            if msg:
+                edit_reply_markup(str(msg["chat"]["id"]), msg["message_id"])
+            res = run_action(code, post_id, extra)
+            if isinstance(res, tuple):
+                notify_owner(res[0], reply_markup=res[1])
+            else:
+                notify_owner(res)
+            stats["post_actions"] = stats.get("post_actions", 0) + 1
+            continue
+
         # предложение из очереди: завести / привязать написанием / отклонить
         if cq and data.startswith("unres:"):
             from .entities import act_on_unresolved
@@ -189,6 +208,21 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
         reply_to = msg.get("reply_to_message") or {}
         text = (msg.get("text") or "").strip()
         handled = False
+        # Пересланный из канала пост или ссылка на него: канал сам становится
+        # интерфейсом — увидел проблему, переслал, выбрал действие.
+        if msg and not text.startswith("/"):
+            from .postmenu import menu, message_id_in
+
+            mid = message_id_in(msg)
+            if mid is not None:
+                found = menu(mid)
+                if found:
+                    notify_owner(found[0], reply_markup=found[1])
+                else:
+                    notify_owner(f"Поста {mid} нет в базе — он вышел не отсюда?")
+                stats["menus"] = stats.get("menus", 0) + 1
+                continue
+
         # Команда в чате: владелец работает из телефона, консоли под рукой нет
         if text.startswith("/"):
             from .commands import run_command
