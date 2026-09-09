@@ -514,3 +514,63 @@ def handle_tap(conn, entity_id: str, post_id: int, user_id: int | None) -> str:
         return "Пояснение недоступно"
     # 200 символов — предел answerCallbackQuery, отсюда и лимит сборки
     return f"{row['name_es']} — {text}"[:200]
+
+
+# Латиница в русском тексте — по нашему же правилу имя собственное: всё
+# нарицательное переводится. Значит из шапки поста имена извлекаются
+# надёжно, без обращения к модели.
+_LATIN_RUN = re.compile(
+    r"[A-ZÁÉÍÓÚÑÜÀÈÒÇ][\wÁÉÍÓÚÑÜáéíóúñüàèòç'’.-]*"
+    r"(?:\s+(?:de|del|la|los|y)?\s*[A-ZÁÉÍÓÚÑÜ][\wÁÉÍÓÚÑÜáéíóúñüàèòç'’.-]*){0,2}"
+)
+# Строки UPD и служебное: имена оттуда уже учтены в шапке.
+_SKIP_LINE = re.compile(r"^_?(UPD|Ранее по теме)\b")
+
+
+def latin_names_in(text_md: str) -> list[str]:
+    """Имена собственные из шапки поста: то, что написано латиницей."""
+    out: list[str] = []
+    for line in (text_md or "").split("\n"):
+        line = line.strip()
+        if not line or _SKIP_LINE.match(line):
+            continue
+        line = line.replace("*", " ").replace("_", " ")
+        for m in _LATIN_RUN.finditer(line):
+            name = m.group(0).strip(" .,:;—-")
+            # односимвольные и инициалы именем не считаем
+            if len(name) >= 3:
+                out.append(name)
+    return list(dict.fromkeys(out))
+
+
+def adopt_name(conn, name: str) -> tuple[str, bool]:
+    """Заводит сущность по имени из поста. Возвращает (id, создана ли).
+
+    Отличается от очереди только поводом: там имя пришло из потока, здесь
+    его назвал владелец. Матчинг тот же — вторую запись под уже заведённое
+    имя не создаём, факты развелись бы по двум сущностям.
+    """
+    entity_id, _candidate = match(conn, name)
+    if entity_id:
+        return entity_id, False
+
+    entity_id = entity_slug(name)
+    if not entity_id:
+        return "", False
+
+    exists = conn.execute(
+        "SELECT id FROM entities WHERE id = %s", (entity_id,)
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO entities (id, name_es, type) VALUES (%s, %s, 'other')",
+            (entity_id, name),
+        )
+    conn.execute(
+        "INSERT INTO entity_aliases (entity_id, alias) VALUES (%s, %s) "
+        "ON CONFLICT DO NOTHING", (entity_id, normalize(name)),
+    )
+    # имя разобрано — из очереди его убираем, чтобы не предлагалось снова
+    conn.execute("DELETE FROM entity_unresolved WHERE surface = %s",
+                 (normalize(name),))
+    return entity_id, not exists

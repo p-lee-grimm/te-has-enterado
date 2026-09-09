@@ -91,9 +91,15 @@ def _post(conn, post_id: int) -> dict[str, Any] | None:
 
 
 def add_context(post_id: int) -> str:
-    """Собирает пояснения к именам этого поста и вставляет их в него."""
+    """Собирает пояснения к именам этого поста и вставляет их в него.
+
+    Имена берём из самой шапки: латиница в русском тексте — по нашему же
+    правилу имя собственное. Незаведённые заводим прямо здесь, а не ждём,
+    пока их подберёт очередь: владелец нажал кнопку именно потому, что
+    пояснение нужно сейчас.
+    """
     from .db import connect
-    from .entities import mark_entities
+    from .entities import adopt_name, latin_names_in
     from .factops import refresh_entity
     from .facts import has_pool
     from .posts import backfill_entity_context
@@ -103,33 +109,56 @@ def add_context(post_id: int) -> str:
         if post is None:
             return "Поста нет в базе."
         head = post["header_md"] or ""
-        # берём заведённые сущности, чьё имя действительно есть в шапке:
-        # отбор тем же mark_entities, что потом поставит звёздочку
-        rows = conn.execute(
-            "SELECT * FROM entities WHERE NOT never_explain"
-        ).fetchall()
-        present = [dict(r) for r in rows
-                   if mark_entities(head, [dict(r)]) != head]
         shown = set(post.get("entity_context") or {})
 
-    todo = [e for e in present if e["id"] not in shown]
-    if not todo:
-        return ("В шапке нет заведённых имён без пояснения. "
-                "Если имя новое — оно попадёт в очередь и заведётся само.")
+        names = latin_names_in(head)
+        if not names:
+            return ("В шапке нет имён латиницей — пояснять нечего. "
+                    "Если имя записано кириллицей, это ошибка перевода: "
+                    "жми «Перевести заново».")
 
-    added = 0
-    for e in todo[:3]:
+        targets: list[tuple[str, str]] = []   # (entity_id, как показать)
+        created: list[str] = []
+        for name in names:
+            entity_id, is_new = adopt_name(conn, name)
+            if not entity_id:
+                continue
+            row = conn.execute(
+                "SELECT name_es, never_explain FROM entities WHERE id = %s",
+                (entity_id,),
+            ).fetchone()
+            if row is None or row["never_explain"]:
+                continue          # короля и премьера поясняет роль в тексте
+            if entity_id in shown:
+                continue          # пояснение уже стоит
+            targets.append((entity_id, row["name_es"]))
+            if is_new:
+                created.append(row["name_es"])
+
+    if not targets:
+        return ("Всё, что можно пояснить, уже пояснено: остальные имена "
+                "либо помечены как заведомо знакомые, либо уже в блоке.")
+
+    lines: list[str] = []
+    edited = 0
+    for entity_id, shown_name in targets[:3]:
         with connect() as conn:
-            if not has_pool(conn, e["id"]):
-                refresh_entity(e["id"], dry_run=False, announce=False)
-        res = backfill_entity_context(e["id"], dry_run=False)
-        added += int(res.get("edited", 0))
+            pool = has_pool(conn, entity_id)
+        if not pool:
+            refresh_entity(entity_id, dry_run=False, announce=False)
+        res = backfill_entity_context(entity_id, dry_run=False)
+        n = int(res.get("edited", 0))
+        edited += n
+        lines.append(f"• <b>{html.escape(shown_name)}</b> — "
+                     + ("пояснение в посте" if n else
+                        "проверенных фактов не нашлось, пояснения не будет"))
 
-    names = ", ".join(html.escape(e["name_es"]) for e in todo[:3])
-    return (f"Пояснения собраны: {names}.\n"
-            f"Постов дополнено: {added}." if added else
-            f"По именам {names} фактов под тему поста не нашлось — "
-            f"пояснения не будет, это штатный исход.")
+    head_line = (f"Завёл: {', '.join(html.escape(n) for n in created)}\n"
+                 if created else "")
+    tail = ("" if edited else
+            "\n\n<i>Источников по этим именам нет — это штатный исход. "
+            "Можно дать текст руками: /fix и номер поста.</i>")
+    return f"{head_line}" + "\n".join(lines) + tail
 
 
 def retranslate(post_id: int) -> str:

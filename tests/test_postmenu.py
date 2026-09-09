@@ -112,3 +112,76 @@ class TestRetranslateKeepsUpd:
         assert "Новый заголовок" in saved["header"]
         assert "Старый заголовок" not in saved["header"]
         assert "/fix 445" in out, "если стало хуже, нужен способ поправить руками"
+
+
+class TestAddContext:
+    """Кнопка нажата — значит пояснение нужно сейчас, а не когда-нибудь.
+
+    Живой случай: пост 444 про Garamendi. Действие смотрело только на уже
+    заведённые сущности, Garamendi среди них не было, и владелец получил
+    «в шапке нет заведённых имён» — то есть отказ вместо работы.
+    """
+
+    HEAD = ("**Garamendi предупредил о влиянии миграционного кризиса "
+            "на суверенитет и экономику Сеуты**")
+
+    @staticmethod
+    def _run(monkeypatch, head, *, entity=None, pool=True, edited=1):
+        import quepasa.entities as ent
+        import quepasa.factops as fo
+        import quepasa.facts as facts
+        import quepasa.postmenu as pm
+        import quepasa.posts as posts
+        adopted = []
+
+        class Conn:
+            def execute(self, sql, params=None):
+                if "FROM posts WHERE id" in sql:
+                    return type("R", (), {"fetchone": lambda s: {
+                        "id": 1, "cluster_id": 2, "message_id": 444,
+                        "header_md": head, "entity_context": {}}})()
+                if "FROM entities WHERE id" in sql:
+                    return type("R", (), {"fetchone": lambda s: entity})()
+                return type("R", (), {"fetchone": lambda s: None})()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        import quepasa.db as db
+        monkeypatch.setattr(db, "connect", lambda *a, **k: Conn())
+        monkeypatch.setattr(ent, "adopt_name",
+                            lambda c, n: (adopted.append(n) or "garamendi", True))
+        monkeypatch.setattr(facts, "has_pool", lambda c, e: pool)
+        monkeypatch.setattr(fo, "refresh_entity",
+                            lambda e, **k: {"facts": [{"fact": "x"}]})
+        monkeypatch.setattr(posts, "backfill_entity_context",
+                            lambda e, dry_run=True: {"edited": edited})
+        return pm.add_context(1), adopted
+
+    def test_unregistered_name_is_adopted(self, monkeypatch):
+        out, adopted = self._run(
+            monkeypatch, self.HEAD,
+            entity={"name_es": "Garamendi", "never_explain": False})
+        assert adopted == ["Garamendi"], "имя из шапки должно заводиться"
+        assert "Garamendi" in out
+        assert "пояснение в посте" in out
+
+    def test_pool_built_when_missing(self, monkeypatch):
+        out, _ = self._run(monkeypatch, self.HEAD, pool=False,
+                           entity={"name_es": "Garamendi", "never_explain": False})
+        assert "Garamendi" in out
+
+    def test_no_facts_says_so_plainly(self, monkeypatch):
+        out, _ = self._run(monkeypatch, self.HEAD, edited=0,
+                           entity={"name_es": "Garamendi", "never_explain": False})
+        assert "не нашлось" in out
+        assert "/fix" in out, "нужен способ дать текст руками"
+
+    def test_never_explain_skipped(self, monkeypatch):
+        out, _ = self._run(monkeypatch, "**Felipe VI открыл сессию**",
+                           entity={"name_es": "Felipe VI", "never_explain": True})
+        assert "заведомо знакомые" in out
+
+    def test_cyrillic_name_points_at_translation(self, monkeypatch):
+        """Имя кириллицей — это ошибка перевода, а не отсутствие сущности."""
+        out, _ = self._run(monkeypatch, "**Гараменди предупредил о кризисе**")
+        assert "Перевести заново" in out
