@@ -17,7 +17,6 @@ import pytest  # noqa: E402
 
 from quepasa.commands import COMMANDS, run_command  # noqa: E402
 from quepasa.lint import rare_words  # noqa: E402
-from quepasa.posts import published_message_id_in  # noqa: E402
 
 
 class TestCommands:
@@ -46,21 +45,6 @@ class TestCommands:
         out = run_command("/status")
         assert "не выполнилась" in out and "база недоступна" in out
 
-
-class TestPublishedReply:
-    """Ответ на уведомление о посте — это новая шапка."""
-
-    def test_message_id_parsed(self):
-        text = "📣 Пост 118 вышел\n\nЗаголовок поста"
-        assert published_message_id_in(text) == 118
-
-    def test_other_notifications_are_not_posts(self):
-        assert published_message_id_in("Факт 12 снят") is None
-        assert published_message_id_in("Новые сущности в очереди") is None
-
-    def test_empty_reply_changes_nothing(self):
-        from quepasa.posts import rewrite_published
-        assert "Пустой" in rewrite_published(118, "   ")
 
 
 class TestRareWords:
@@ -173,3 +157,35 @@ class TestPublicationCheck:
         """Окно закрыто с 21 до 9 — утром свежесть в 12 часов нормальна."""
         ok, _ = self._check(12.0, monkeypatch)
         assert ok
+
+
+class TestFixCommand:
+    """Удалить пост владелец может сам в канале; отредактировать — нет.
+
+    Сообщение бота в канале правит только сам бот, поэтому из всего,
+    что делало уведомление «📣 Пост вышел», осталась одна нужная часть —
+    и та по запросу, а не двадцать раз в сутки.
+    """
+
+    def test_help_without_arguments(self):
+        out = run_command("/fix")
+        assert "/fix" in out and "445" in out
+
+    def test_help_when_number_missing(self):
+        assert "заменить текст" in run_command("/fix просто текст")
+
+    def test_help_when_text_missing(self):
+        assert "заменить текст" in run_command("/fix 445")
+
+    def test_calls_rewrite_with_number_and_text(self, monkeypatch):
+        import quepasa.posts as posts
+        seen = {}
+        monkeypatch.setattr(posts, "rewrite_published",
+                            lambda mid, text: seen.update(mid=mid, text=text) or "ок")
+        assert run_command("/fix 445 Новый заголовок\nи лид") == "ок"
+        assert seen["mid"] == 445
+        assert seen["text"] == "Новый заголовок\nи лид"
+
+    def test_other_commands_ignore_arguments(self):
+        """Аргумент есть только у /fix; остальные его не ждут."""
+        assert "Команды" in run_command("/help лишнее слово")

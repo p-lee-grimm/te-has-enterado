@@ -23,6 +23,7 @@ HELP = [
     ("/refresh", "пересобрать посты по текущим правилам вёрстки"),
     ("/words", "найти выдуманные слова в вышедших постах"),
     ("/queue", "что ждёт решения"),
+    ("/fix", "заменить текст вышедшего поста: /fix 445 Новый заголовок"),
     ("/help", "этот список"),
 ]
 
@@ -69,6 +70,12 @@ def _stats() -> str:
             "SELECT count(*) FROM posts WHERE status = 'published' "
             "AND published_at >= now() - make_interval(hours => 24)"
         ).fetchone()["count"]
+        # отклонения воротами больше не приходят в чат по штуке; здесь
+        # видно, не режет ли правило слишком много
+        skipped = conn.execute(
+            "SELECT count(*) FROM posts WHERE status = 'skipped' "
+            "AND created_at >= now() - make_interval(hours => 24)"
+        ).fetchone()["count"]
 
     return (
         f"<b>За сутки</b>\n\n"
@@ -77,7 +84,7 @@ def _stats() -> str:
         f"От двух владельцев: {by_owner['от2']}\n"
         f"От трёх: {by_owner['от3']}\n"
         f"От пяти: {by_owner['от5']}\n\n"
-        f"Вышло постов: {posted}"
+        f"Вышло постов: {posted}, отсеяно: {skipped}"
     )
 
 
@@ -113,8 +120,26 @@ def _words() -> str:
     rows = "\n".join(
         f"• <b>{html.escape(w)}</b> — пост {mid}" for w, mid in found)
     return ("<b>Проверка слов</b>\n\nПохоже на транскрипцию вместо перевода:\n"
-            f"{rows}\n\n<i>Ответь реплаем на уведомление о посте, "
-            "чтобы переписать шапку.</i>")
+            f"{rows}\n\n<i>Поправить: /fix &lt;номер&gt; &lt;новый текст&gt;</i>")
+
+
+def _fix(arg: str = "") -> str:
+    """Заменяет шапку вышедшего поста: /fix 445 Новый заголовок.
+
+    Удалить пост владелец может и сам в канале, а отредактировать
+    сообщение бота там нельзя — это умеет только сам бот. Поэтому
+    из всего, что делало уведомление о каждом посте, осталась
+    единственная нужная часть, и та по запросу.
+    """
+    from .posts import rewrite_published
+
+    parts = arg.strip().split(maxsplit=1)
+    if len(parts) < 2 or not parts[0].isdigit():
+        return ("<b>/fix</b> — заменить текст вышедшего поста\n\n"
+                "<code>/fix 445 Новый заголовок\nи лид со второй строки</code>\n\n"
+                "<i>Номер поста виден в его ссылке. Текст идёт как есть, "
+                "без правил имён и без ворот.</i>")
+    return rewrite_published(int(parts[0]), parts[1])
 
 
 def _queue() -> str:
@@ -169,6 +194,7 @@ COMMANDS = {
     "/refresh": _refresh,
     "/words": _words,
     "/queue": _queue,
+    "/fix": _fix,
 }
 
 
@@ -178,12 +204,13 @@ def run_command(text: str) -> str:
     Пустая строка означает «команда ответила сама»: так делают те, кому
     нужен свой порядок сообщений или свои кнопки.
     """
-    name = text.strip().split()[0].split("@")[0].lower()
+    head, _, arg = text.strip().partition(" ")
+    name = head.split("@")[0].lower()
     fn = COMMANDS.get(name)
     if fn is None:
         return f"Не знаю команды {html.escape(name)}.\n\n{_help()}"
     try:
-        return fn()
+        return fn(arg) if name == "/fix" else fn()
     except Exception as exc:  # noqa: BLE001 — ответ обязателен в любом случае
         log.exception("Команда %s не выполнилась", name)
         return f"{html.escape(name)} не выполнилась: {html.escape(str(exc)[:200])}"

@@ -201,19 +201,12 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
 
         if text and reply_to.get("text"):
             from .factops import fact_id_in, fix
-            from .posts import published_message_id_in, rewrite_published
 
             fact_id = fact_id_in(reply_to.get("text", ""))
-            mid = published_message_id_in(reply_to.get("text", ""))
             if fact_id:
                 handled = True
                 answer = fix(fact_id, text)
                 notify_owner(answer)
-                stats["edited"] += 1
-            elif mid:
-                # ответ на уведомление о вышедшем посте — это новая шапка
-                handled = True
-                notify_owner(rewrite_published(mid, text))
                 stats["edited"] += 1
 
         if not handled and not cq:

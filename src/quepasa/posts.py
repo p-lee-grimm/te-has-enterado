@@ -904,51 +904,18 @@ def publish(cluster_id: int, dry_run: bool = True, silent: bool = True,
     log.info("Сюжет %s опубликован%s%s, message_id=%s",
              cluster_id, "" if silent else " СО ЗВУКОМ",
              f" реплаем на {reply_to}" if reply_to else "", message_id)
-    notify_published(post["id"], message_id, post["header_md"])
     return {"status": "published", "message_id": message_id, "sources": source_ids,
             "silent": silent, "reply_to": reply_to}
 
 
-def notify_published(post_id: int, message_id: int | None, header_md: str) -> None:
-    """Сообщает владельцу о вышедшем посте — постфактум, не спрашивая.
-
-    Ждать подтверждения по каждому посту нельзя: их два десятка в сутки,
-    и очередь на согласование останавливает канал целиком. Поэтому пост
-    выходит сам, а владелец получает его текст и может переписать ответом
-    или снять. Правка сообщения уведомление читателям не шлёт, так что
-    исправление задним числом ничего не стоит.
-    """
-    import html as _html
-
-    from .telegram import message_link
-
-    if not message_id:
-        return
-    link = message_link(message_id)
-    head = (header_md or "").split("\n")[0].strip("* ")
-    text = "\n".join([
-        f'📣 <a href="{link}">Пост {message_id}</a> вышел',
-        "",
-        _html.escape(head),
-        "",
-        "<i>Ответь реплаем — перепишу шапку. Кнопка снимает пост из канала.</i>",
-    ])
-    notify_owner(text, reply_markup={"inline_keyboard": [[
-        {"text": "🗑 Снять из канала", "callback_data": f"post:del:{post_id}"},
-    ]]})
-
-
-_PUBLISHED_LINK = re.compile(r"Пост (\d+)\D")
-
-
-def published_message_id_in(text: str) -> int | None:
-    """message_id из уведомления о вышедшем посте, если это оно."""
-    m = _PUBLISHED_LINK.search(text or "")
-    return int(m.group(1)) if m else None
 
 
 def rewrite_published(message_id: int, new_head: str) -> str:
     """Заменяет шапку вышедшего поста текстом владельца и пересобирает его.
+
+    Вызывается командой /fix из чата: удалить пост владелец может и сам
+    в канале, а вот отредактировать сообщение бота там нельзя — это умеет
+    только сам бот.
 
     Слово владельца выше модели: текст берём как есть, без правил имён
     и без ворот. Ворота защищают от модели, а не от человека.
@@ -1940,7 +1907,6 @@ def autopost_enabled() -> bool:
 def send_post_for_review(cluster_id: int, cards: list[dict[str, Any]] | None = None) -> None:
     """Готовый пост уходит владельцу с кнопками вместо канала (§9)."""
     from .entities import render_cards_html
-    from .telegram import notify_owner
 
     with connect() as conn:
         post = get_post(conn, cluster_id)
@@ -2105,13 +2071,12 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
         )
         if not report.passed:
             reason = report.reason()
+            # В чат не пишем: отклонение воротами — это правило в работе,
+            # а не происшествие. Владельцу с ним делать нечего, а два
+            # десятка таких сообщений в сутки топят те, на которые надо
+            # реагировать. Счётчик виден в /stats, подробности — в логе.
             log.warning("Сюжет %s не прошёл ворота: %s", cid, reason)
             stats["gated"] = stats.get("gated", 0) + 1
-            if not dry_run:
-                notify_owner(
-                    f"⚠️ Пост по сюжету {cid} не опубликован.\n"
-                    f"<b>{meta.get('headline', '')}</b>\n\n{reason}"
-                )
             continue
 
         with connect() as conn:
