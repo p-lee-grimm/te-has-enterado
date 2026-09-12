@@ -193,6 +193,9 @@ def _check_fields(report: GateReport, headline: str, summary: str,
         problems.append(
             f"{count_sentences(summary)} предложений при максимуме {max_sentences}"
         )
+    if s.get_path("posts.require_lead", False) and not summary.strip():
+        # голый заголовок — формат «Коротко», а не отдельного поста
+        problems.append("пустой lead")
     if s.get_path("posts.require_significance", False) and not significance.strip():
         problems.append("пустой significance")
 

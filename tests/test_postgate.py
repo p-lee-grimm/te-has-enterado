@@ -26,7 +26,8 @@ class TestFields:
     def test_headline_without_period_is_fine(self):
         """Заголовок точкой не заканчивается — это норма, а не обрыв."""
         r = GateReport()
-        _check_fields(r, "Араухо перешёл в Ливерпуль в аренду", "", "")
+        _check_fields(r, "Араухо перешёл в Ливерпуль в аренду",
+                      "Клуб сообщил об аренде до конца сезона.", "")
         assert r.passed, r.reason()
 
     def test_headline_with_period_rejected(self):
@@ -34,11 +35,16 @@ class TestFields:
         _check_fields(r, "Заголовок с точкой.", "", "")
         assert not r.passed
 
-    def test_empty_lead_allowed(self):
-        """Если заголовок объясняет всё, пустой lead — правильный ответ."""
+    def test_empty_lead_rejected(self):
+        """Голый заголовок — формат «Коротко», а не отдельного поста.
+
+        Заголовков почти всегда не хватает: издания выносят в них интригу,
+        а само решение стоит в первом абзаце, поэтому лид собирается
+        по текстам и обязателен (posts.require_lead)."""
         r = GateReport()
         _check_fields(r, "В Японии прошли парламентские выборы", "", "")
-        assert r.passed
+        assert not r.passed
+        assert "lead" in r.reason()
 
     def test_empty_headline_rejected(self):
         r = GateReport()
@@ -48,7 +54,7 @@ class TestFields:
     def test_significance_without_period_allowed(self):
         """significance — фраза, а не предложение: точка необязательна."""
         r = GateReport()
-        _check_fields(r, "Заголовок", "",
+        _check_fields(r, "Заголовок", "Что-то произошло вчера вечером.",
                       "Важно для тех, кто следит за кризисом безопасности Ceuta")
         assert r.passed, r.reason()
 

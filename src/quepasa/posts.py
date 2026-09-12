@@ -150,6 +150,10 @@ NAME_FIXES = [
 # «Теннист» ушёл в пост про Kyrgios дважды в трёх предложениях.
 WORD_FIXES = [
     (re.compile(r"\bтеннист(\w*)", re.I), r"теннисист\1"),
+    # «20 автономных вехикулей» ушло в канал и осело в пуле фактов дважды:
+    # vehículo модель записала кириллицей вместо перевода. Замена по основе —
+    # «вехикуль» склоняется как «автомобиль», поэтому окончания совпадают.
+    (re.compile(r"\bвехикул", re.I), "автомобил"),
 ]
 
 
@@ -436,6 +440,27 @@ def cluster_articles(conn, cluster_id: int) -> list[dict[str, Any]]:
     ).fetchall()
 
 
+def cluster_texts(conn, cluster_id: int, limit: int, chars: int) -> list[dict[str, Any]]:
+    """Тексты статей сюжета — материал для лида.
+
+    По одному материалу с издания и с приоритетом тем, у кого есть полный
+    текст: у части изданий его не достать (пейволл, антибот), и тогда
+    работаем с анонсом из фида — он короче, но факт в нём обычно есть.
+    """
+    return conn.execute(
+        """
+        SELECT DISTINCT ON (a.source_id)
+               s.name AS source_name, s.lean, a.title,
+               left(COALESCE(NULLIF(a.body, ''), a.summary_feed, ''), %s) AS text
+        FROM articles a
+        JOIN sources s ON s.id = a.source_id
+        WHERE a.cluster_id = %s
+        ORDER BY a.source_id, (a.body IS NOT NULL) DESC, a.published_at DESC
+        """,
+        (chars, cluster_id),
+    ).fetchall()[:limit]
+
+
 def pick_links(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Не больше MAX_LINKS_PER_POST ссылок, по одной на владельца.
 
@@ -704,6 +729,24 @@ def generate_header(cluster_id: int, hint: str = "") -> tuple[str, str, dict]:
         for a in sorted(articles, key=lambda x: x["source_name"])
     ]
     user = "Заголовки об одном событии:\n" + "\n".join(lines)
+
+    # Тексты статей — материал для лида. Заголовков для него не хватает:
+    # испанские издания выносят в них интригу, а само решение стоит
+    # в первом абзаце. Кластеризация при этом остаётся на заголовках
+    # и эмбеддингах — тексты нужны только чтобы было что рассказать.
+    settings = get_settings()
+    with connect() as conn:
+        texts = cluster_texts(
+            conn, cluster_id,
+            int(settings.get_path("posts.lead_sources", 4)),
+            int(settings.get_path("posts.lead_chars_per_source", 900)),
+        )
+    blocks = [
+        f"[{t['source_name']}, {t['lean']}] {t['title']}\n{t['text'].strip()}"
+        for t in texts if (t["text"] or "").strip()
+    ]
+    if blocks:
+        user += "\n\nТексты изданий:\n\n" + "\n\n".join(blocks)
     if hint:
         user += f"\n\n{hint}"
 

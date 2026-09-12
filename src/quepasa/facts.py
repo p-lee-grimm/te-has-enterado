@@ -494,8 +494,13 @@ def save_facts(conn, entity_id: str, result: dict[str, Any]) -> list[dict[str, A
                        (entity_id,)).fetchone()
     names = f"{row['name_es']} {row['name_ru']}" if row else ""
 
+    from .posts import fix_names
+
     saved: list[dict[str, Any]] = []
     for f in result["kept"]:
+        # Факт живёт в пуле месяцами и переиспользуется в каждом посте
+        # о сущности, поэтому калька, попавшая сюда, размножается.
+        f["fact"] = fix_names(f["fact"])
         kind = f["kind"]
         expires = now + timedelta(days=ttl) if kind == "legal" else None
         # Оценка и классификация из прессы ждут подтверждения с другого полюса:
@@ -900,6 +905,13 @@ def build_context(conn, entity: dict[str, Any], topic: str, headline: str,
     except Exception as exc:  # noqa: BLE001 — одна сборка не роняет пост
         log.warning("Контекст для %s не собрался: %s", entity["id"], exc)
         return None
+
+    # Те же механические правки, что и в теле поста. Раньше они до блока
+    # «кто это» не доходили: «вехикули» вышли в канал именно отсюда, хотя
+    # в заголовке и лиде это слово было бы заменено.
+    from .posts import fix_names
+
+    out["context"] = fix_names(out["context"])
 
     used = [f for f in facts if f["id"] in out["fact_ids"]] or facts
     check = validate_assembly(out["context"], used)
