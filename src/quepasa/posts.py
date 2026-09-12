@@ -680,12 +680,14 @@ def default_header_md(articles: list[dict[str, Any]]) -> str:
     return f"**{newest['title']}**"
 
 
-def generate_header(cluster_id: int) -> tuple[str, str, dict]:
+def generate_header(cluster_id: int, hint: str = "") -> tuple[str, str, dict]:
     """Просит модель сформулировать событие по-русски.
 
     Возвращает (markdown шапки, категория, метаданные). В метаданных, помимо
     стоимости, — scope, geo_tag и significance: их определяет тот же вызов,
     отдельного обращения к модели для этого не делаем.
+
+    `hint` — замечание критика, с которым заголовок переписывается второй раз.
     """
     from .config import load_prompt
     from .llm import LLMUsage, extract_json
@@ -702,6 +704,8 @@ def generate_header(cluster_id: int) -> tuple[str, str, dict]:
         for a in sorted(articles, key=lambda x: x["source_name"])
     ]
     user = "Заголовки об одном событии:\n" + "\n".join(lines)
+    if hint:
+        user += f"\n\n{hint}"
 
     provider = get_settings().require("summarize.provider")
     fn = _PROVIDERS.get(provider)
@@ -1611,6 +1615,8 @@ def _cluster_pool(conn, *, ignore_time: bool = False,
                c.impact_reason             AS impact_reason,
                c.impact_confidence         AS impact_confidence,
                c.impact_at                 AS impact_at,
+               c.thin_at                   AS thin_at,
+               c.thin_reason               AS thin_reason,
                count(DISTINCT a.source_id) AS n_sources,
                count(*)                    AS n_articles,
                min(a.published_at)         AS first_at,
@@ -1638,7 +1644,8 @@ def _cluster_pool(conn, *, ignore_time: bool = False,
           -- сюжет, ушедший в дайджест, отдельным постом уже не выйдет (§5)
           AND (p.id IS NULL OR p.status = 'published')
         GROUP BY c.id, c.topic, c.scope, c.impact, c.impact_reason,
-                 c.impact_confidence, c.impact_at, p.id, p.status,
+                 c.impact_confidence, c.impact_at, c.thin_at, c.thin_reason,
+                 p.id, p.status,
                  p.published_at, p.n_articles_at_publish, p.message_id
         HAVING TRUE {age_clause}
         """,
@@ -1816,6 +1823,32 @@ def mark_skipped(conn, cluster_id: int, headline: str, category: str) -> None:
     )
 
 
+def mark_thin(conn, cluster_id: int, reason: str) -> None:
+    """Помечает сюжет, чей пост не передаёт суть даже после переписывания.
+
+    Без отметки сюжет каждые полчаса проходил бы генерацию заголовка и две
+    проверки критика заново — и каждые полчаса отклонялся. Отметка живёт
+    сутки: сюжет развивается, и завтра о нём может появиться настоящая новость.
+    """
+    conn.execute(
+        "UPDATE clusters SET thin_at = now(), thin_reason = %s WHERE id = %s",
+        (reason[:300], cluster_id),
+    )
+
+
+def is_thin(row: dict[str, Any]) -> bool:
+    """Свежая ли отметка «пост не передаёт суть»."""
+    from datetime import datetime, timedelta, timezone
+
+    from .config import get_settings
+
+    at = row.get("thin_at")
+    if at is None:
+        return False
+    hours = float(get_settings().get_path("critic.recheck_after_hours", 24))
+    return datetime.now(timezone.utc) - at < timedelta(hours=hours)
+
+
 def repeat_state(row: dict[str, Any]) -> tuple[bool, bool]:
     """(допустить ли, продолжение ли) по правилу повтора §2.
 
@@ -1895,6 +1928,13 @@ def digest_clusters(conn, *, ignore_time: bool = False) -> list[dict[str, Any]]:
         fate = impact_mod.cached_route(r)
         if fate == impact_mod.DROP:
             continue  # светская хроника не идёт и строкой
+
+        # Пост по этому сюжету не передавал суть даже после переписывания.
+        # Строкой в «Коротко» он выйти может: там голый заголовок — формат,
+        # а не недоработка.
+        if is_thin(r) and r["passes"]:
+            flow1.append(r)
+            continue
 
         if r.get("scope") == "world" and r["passes"]:
             flow2.append(r)
@@ -2125,6 +2165,7 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
     max_calls = int(s.get_path("autopost.max_header_calls_per_run", 0)) or room * 4
     taken = calls = 0
 
+    from . import critic as critic_mod
     from . import impact as impact_mod
 
     max_impact_calls = int(s.get_path("impact.max_calls_per_run", 12))
@@ -2175,6 +2216,12 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
                 )
             continue
 
+        # Сюжет, чей заголовок уже не дался критику, второй раз через модель
+        # не гоняем: отметка живёт сутки, дальше сюжет получит новый шанс.
+        if is_thin(row):
+            stats["thin"] = stats.get("thin", 0) + 1
+            continue
+
         # Жанр материала — до генерации заголовка. Вызов дешевле (заголовки,
         # разделы, первый абзац), и отклонённый сюжет не платит за заголовок,
         # которого никто не увидит. Ранжирование здесь не поможет: светская
@@ -2208,6 +2255,39 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
             stats["errors"] += 1
             last_error = str(exc)
             continue
+
+        # Критик: узнает ли читатель, что произошло. Ворота ловят это по
+        # списку глаголов речи, и модель обходит список формулировкой —
+        # второе мнение надёжнее словаря.
+        if critic_mod.enabled():
+            # заголовки источников уже лежат в строке пула — второй раз
+            # в базу за ними не ходим
+            titles = list(row.get("titles") or [])
+            verdict = critic_mod.check(titles, header)
+            if not verdict["conveys"]:
+                # одна попытка переписать с подсказкой: суть обычно есть
+                # в заголовках источников, её просто не перенесли
+                for _ in range(int(s.get_path("critic.retries", 1))):
+                    calls += 1
+                    try:
+                        header, topic, meta = generate_header(
+                            cid, critic_mod.hint_for_retry(verdict))
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("Сюжет %s: переписать не вышло: %s", cid, exc)
+                        last_error = str(exc)
+                        break
+                    verdict = critic_mod.check(titles, header)
+                    if verdict["conveys"]:
+                        stats["rewritten"] = stats.get("rewritten", 0) + 1
+                        log.info("Сюжет %s: заголовок переписан по замечанию критика", cid)
+                        break
+            if not verdict["conveys"]:
+                reason = verdict.get("missing") or "пост не передаёт суть"
+                log.info("Сюжет %s — не пост, а строка в «Коротко»: %s", cid, reason)
+                with connect() as conn:
+                    mark_thin(conn, cid, reason)
+                stats["thin"] = stats.get("thin", 0) + 1
+                continue
 
         # тему запоминаем на сюжете: она понадобится следующему прогону,
         # чтобы не платить за неё второй раз
