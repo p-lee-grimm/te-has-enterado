@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 _LINK = re.compile(r"t\.me/(?:c/\d+|[A-Za-z][\w_]{3,})/(\d+)")
 
 ACTIONS = [
-    ("ctx",  "📇 Добавить контекст"),
+    ("ctx",  "📇 Контекст"),
     ("tr",   "✍️ Перевести заново"),
     ("src",  "📰 Дополнить источниками"),
     ("rel",  "🔗 Связать с другой"),
@@ -161,6 +161,199 @@ def add_context(post_id: int) -> str:
     return f"{head_line}" + "\n".join(lines) + tail
 
 
+def context_menu(post_id: int) -> tuple[str, dict[str, Any]] | str:
+    """Что сейчас в блоке «кто это» и что с ним можно сделать.
+
+    Одной кнопкой тут не обойтись: пояснение бывает не только отсутствующим,
+    но и неудачным — собранным не под ту тему, устаревшим или просто корявым
+    («20 автономных вехикулей»). Владелец видит блок в канале и должен
+    из канала же его и починить, не открывая консоль.
+    """
+    from .db import connect
+    from .entities import context_text
+
+    with connect() as conn:
+        post = _post(conn, post_id)
+        if post is None:
+            return "Поста нет в базе."
+        shown = []
+        for entity_id in (post.get("entity_context") or {}):
+            text, _url = context_text(post.get("entity_context"), entity_id)
+            if not text:
+                continue
+            row = conn.execute("SELECT name_es FROM entities WHERE id = %s",
+                               (entity_id,)).fetchone()
+            shown.append((row["name_es"] if row else entity_id, text))
+
+    if shown:
+        lines = ["<b>Сейчас в посте:</b>"]
+        for name, text in shown:
+            lines.append(f"• <b>{html.escape(name)}</b> — {html.escape(text[:180])}")
+    else:
+        lines = ["<i>Пояснений в посте сейчас нет.</i>"]
+
+    rows = [[
+        {"text": "➕ Собрать", "callback_data": f"pa:ctxadd:{post_id}"},
+        {"text": "🔄 Пересобрать", "callback_data": f"pa:ctxre:{post_id}"},
+    ]]
+    if shown:
+        rows.append([
+            {"text": "📋 Откуда это", "callback_data": f"pa:ctxwhy:{post_id}"},
+            {"text": "🗑 Убрать", "callback_data": f"pa:ctxdel:{post_id}"},
+        ])
+    return "\n".join(lines), {"inline_keyboard": rows}
+
+
+def rebuild_context(post_id: int) -> str:
+    """Собирает пояснения заново для тех же имён, поверх старых.
+
+    Отдельно от «Собрать»: та кнопка ищет новые имена и не трогает уже
+    показанное, а здесь смысл обратный — текст есть, но он плохой.
+    """
+    from .db import connect
+    from .facts import build_context
+    from .llm import LLMUsage
+    from .posts import refresh_one
+
+    with connect() as conn:
+        post = _post(conn, post_id)
+        if post is None:
+            return "Поста нет в базе."
+        ids = list((post.get("entity_context") or {}).keys()) or \
+            list(post.get("entity_ids") or [])
+        if not ids:
+            return "Пояснять нечего: в посте нет сущностей. Жми «Собрать»."
+        saved = conn.execute("SELECT * FROM entities WHERE id = ANY(%s)",
+                             (ids,)).fetchall()
+
+    usage = LLMUsage()
+    contexts: dict[str, Any] = {}
+    headline = (post["header_md"] or "").split("\n")[0].strip("* ")
+    for ent in saved:
+        with connect() as conn:
+            built = build_context(conn, dict(ent), post["category"] or "",
+                                  headline, usage)
+        if built:
+            contexts[ent["id"]] = built
+
+    if not contexts:
+        return ("Собрать заново не вышло: подходящих проверенных фактов "
+                "под тему поста нет. Старый текст оставил на месте.")
+
+    import json
+
+    with connect() as conn:
+        conn.execute(
+            "UPDATE posts SET entity_context = %s, entity_ids = %s WHERE id = %s",
+            (json.dumps(contexts, ensure_ascii=False),
+             json.dumps(list(contexts)), post_id),
+        )
+    if not refresh_one(post_id):
+        return "Пересобрал в базе, но в канал правка не ушла — смотри лог."
+
+    lines = ["<b>Пересобрано:</b>"]
+    for entity_id, built in contexts.items():
+        lines.append(f"• {html.escape(built['context'][:180])}")
+    return "\n".join(lines)
+
+
+def drop_context(post_id: int) -> str:
+    """Убирает блок «кто это» из поста целиком."""
+    from .db import connect
+    from .posts import refresh_one
+
+    with connect() as conn:
+        post = _post(conn, post_id)
+        if post is None:
+            return "Поста нет в базе."
+        if not (post.get("entity_context") or post.get("entity_ids")):
+            return "Блока и так нет."
+        conn.execute(
+            "UPDATE posts SET entity_context = '{}'::jsonb, "
+            "entity_ids = '[]'::jsonb WHERE id = %s",
+            (post_id,),
+        )
+    return ("Блок убран из поста."
+            if refresh_one(post_id) else "Убрал в базе, но пост не пересобрался.")
+
+
+def context_sources(post_id: int) -> tuple[str, dict[str, Any] | None] | str:
+    """Факты, на которых стоит пояснение, и ссылка на источник.
+
+    Нужна, когда текст в блоке выглядит странно: видно, из какого факта он
+    собран и откуда факт взят, — и оттуда же можно запретить пояснять имя.
+    Номер факта показываем: им правят пул через `manage.py fact fix`.
+    """
+    from .db import connect
+
+    with connect() as conn:
+        post = _post(conn, post_id)
+        if post is None:
+            return "Поста нет в базе.", None
+        blocks = post.get("entity_context") or {}
+        if not blocks:
+            return "Пояснений в посте нет — показывать нечего.", None
+
+        lines, buttons = [], []
+        for entity_id, block in blocks.items():
+            if not isinstance(block, dict):
+                continue
+            row = conn.execute("SELECT name_es FROM entities WHERE id = %s",
+                               (entity_id,)).fetchone()
+            name = row["name_es"] if row else entity_id
+            lines.append(f"<b>{html.escape(name)}</b>")
+            facts = conn.execute(
+                "SELECT id, fact, source_url FROM entity_facts "
+                "WHERE id = ANY(%s) ORDER BY id",
+                (list(block.get("fact_ids") or []),),
+            ).fetchall()
+            for f in facts:
+                src = f" <a href=\"{f['source_url']}\">источник</a>" if f["source_url"] else ""
+                lines.append(f"  #{f['id']} {html.escape(f['fact'][:160])}{src}")
+            if not facts:
+                lines.append("  <i>факты, на которых стоял текст, из пула ушли</i>")
+            buttons.append([{"text": f"🙈 Не пояснять {name[:20]}",
+                             "callback_data": f"pa:ctxnever:{post_id}:{entity_id}"}])
+
+    lines.append("")
+    lines.append("<i>Поправить текст факта: manage.py fact fix НОМЕР «новый текст»</i>")
+    return "\n".join(lines), {"inline_keyboard": buttons} if buttons else None
+
+
+def never_explain(post_id: int, entity_id: str) -> str:
+    """Помечает имя как заведомо знакомое и убирает его пояснение из поста.
+
+    Пометка глобальная: короля, премьера и Real Madrid поясняют роль в тексте,
+    и пояснение к ним — шум во всех постах, а не только в этом.
+    """
+    import json
+
+    from .db import connect
+    from .posts import refresh_one
+
+    with connect() as conn:
+        post = _post(conn, post_id)
+        if post is None:
+            return "Поста нет в базе."
+        row = conn.execute(
+            "UPDATE entities SET never_explain = TRUE WHERE id = %s "
+            "RETURNING name_es", (entity_id,),
+        ).fetchone()
+        if row is None:
+            return "Такой сущности нет."
+        contexts = {k: v for k, v in (post.get("entity_context") or {}).items()
+                    if k != entity_id}
+        ids = [e for e in (post.get("entity_ids") or []) if e != entity_id]
+        conn.execute(
+            "UPDATE posts SET entity_context = %s, entity_ids = %s WHERE id = %s",
+            (json.dumps(contexts, ensure_ascii=False), json.dumps(ids), post_id),
+        )
+    refresh_one(post_id)
+    return (f"<b>{html.escape(row['name_es'])}</b> больше не поясняем — "
+            "ни здесь, ни в будущих постах. Вернуть: "
+            f"<code>manage.py entity never-explain {html.escape(entity_id)} --off</code>")
+
+
 def retranslate(post_id: int) -> str:
     """Пересобирает шапку моделью заново и правит пост."""
     from .db import connect
@@ -290,10 +483,20 @@ def mark_duplicate(post_id: int) -> str:
     return f"{answer}. Сюжет помечен как уже выходивший."
 
 
-def run_action(code: str, post_id: int, extra: int | None = None):
+def run_action(code: str, post_id: int, extra: str | int | None = None):
     """Выполняет действие. Возвращает текст либо (текст, клавиатура)."""
     if code == "ctx":
+        return context_menu(post_id)
+    if code == "ctxadd":
         return add_context(post_id)
+    if code == "ctxre":
+        return rebuild_context(post_id)
+    if code == "ctxdel":
+        return drop_context(post_id)
+    if code == "ctxwhy":
+        return context_sources(post_id)
+    if code == "ctxnever" and extra is not None:
+        return never_explain(post_id, str(extra))
     if code == "tr":
         return retranslate(post_id)
     if code == "src":
@@ -301,7 +504,7 @@ def run_action(code: str, post_id: int, extra: int | None = None):
     if code == "rel":
         return related_candidates(post_id)
     if code == "reldo" and extra is not None:
-        return link_related(post_id, extra)
+        return link_related(post_id, int(extra))
     if code == "dup":
         return mark_duplicate(post_id)
     if code == "nope":

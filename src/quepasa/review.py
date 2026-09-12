@@ -155,9 +155,11 @@ def process_callbacks(timeout: int = 0) -> dict[str, int]:
         if cq and data.startswith("pa:"):
             from .postmenu import run_action
 
-            parts = data.split(":")
+            # extra бывает и числом (сюжет для связи), и строкой (id сущности),
+            # поэтому не приводим его здесь: разбирает тот, кому он нужен
+            parts = data.split(":", 3)
             code, post_id = parts[1], int(parts[2])
-            extra = int(parts[3]) if len(parts) > 3 else None
+            extra = parts[3] if len(parts) > 3 else None
             answer_callback(cq["id"], "Делаю…")
             msg = cq.get("message") or {}
             if msg:

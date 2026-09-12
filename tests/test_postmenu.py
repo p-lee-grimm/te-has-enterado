@@ -65,7 +65,7 @@ class TestMenuShape:
         """Кнопка без обработчика — это тупик, который видно только в бою."""
         import quepasa.postmenu as pm
         for code, _ in ACTIONS:
-            monkeypatch.setattr(pm, "add_context", lambda p: "ok")
+            monkeypatch.setattr(pm, "context_menu", lambda p: ("ok", None))
             monkeypatch.setattr(pm, "retranslate", lambda p: "ok")
             monkeypatch.setattr(pm, "add_sources", lambda p: "ok")
             monkeypatch.setattr(pm, "related_candidates", lambda p: ("ok", None))
@@ -73,6 +73,48 @@ class TestMenuShape:
             res = pm.run_action(code, 1)
             assert res, f"действие {code} ничего не вернуло"
             assert "Не знаю действия" not in str(res)
+
+
+class TestContextSubmenu:
+    """Контекст — не одна кнопка: пояснение бывает не только отсутствующим,
+    но и неудачным, и чинить его надо из канала, не открывая консоль."""
+
+    def test_context_button_opens_submenu(self, monkeypatch):
+        import quepasa.postmenu as pm
+        monkeypatch.setattr(pm, "context_menu", lambda p: ("меню", {"inline_keyboard": []}))
+        res = pm.run_action("ctx", 1)
+        assert isinstance(res, tuple), "кнопка должна открывать подменю, а не действовать"
+
+    @pytest.mark.parametrize("code,target", [
+        ("ctxadd", "add_context"),
+        ("ctxre", "rebuild_context"),
+        ("ctxdel", "drop_context"),
+    ])
+    def test_submenu_actions_are_wired(self, monkeypatch, code, target):
+        import quepasa.postmenu as pm
+        monkeypatch.setattr(pm, target, lambda p: f"сделал {code}")
+        assert pm.run_action(code, 1) == f"сделал {code}"
+
+    def test_sources_action_is_wired(self, monkeypatch):
+        import quepasa.postmenu as pm
+        monkeypatch.setattr(pm, "context_sources", lambda p: ("факты", None))
+        assert pm.run_action("ctxwhy", 1)[0] == "факты"
+
+    def test_never_explain_takes_entity_id_as_text(self, monkeypatch):
+        """id сущности — строка («weride»), а не число: раньше разбор
+        callback приводил дополнительный параметр к int и падал бы на нём."""
+        import quepasa.postmenu as pm
+        seen = {}
+        def fake(post_id, entity_id):
+            seen["entity"] = entity_id
+            return "ok"
+
+        monkeypatch.setattr(pm, "never_explain", fake)
+        assert pm.run_action("ctxnever", 1, "weride") == "ok"
+        assert seen["entity"] == "weride"
+
+    def test_never_explain_without_entity_does_nothing(self):
+        assert "Не знаю действия" in run_action("ctxnever", 1)
 
     def test_unknown_action_reports_itself(self):
         assert "Не знаю действия" in run_action("нету", 1)
