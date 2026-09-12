@@ -125,3 +125,41 @@ def strip_html(html: str) -> str:
         .replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'")
     )
     return _WS_RE.sub(" ", text).strip()
+
+
+# Сегменты пути, которые разделом не являются: номер, дата, язык, служебное.
+_NOT_SECTION_RE = re.compile(
+    r"^(?:\d+|\d{4}-\d{2}-\d{2}|noticias?|articulo|news|es|ca|gl|eu|en|amp|rss|feed)$"
+)
+
+
+def url_sections(url: str, depth: int = 2) -> list[str]:
+    """Разделы издания из пути URL: elpais.com/gente/2026/... -> ['gente'].
+
+    Смотрим только первые `depth` сегментов: дальше начинается сам материал,
+    и слово «viajes» из слага заголовка разделом не является. Длинный сегмент
+    с тремя дефисами — это и есть слаг, даже если он стоит вторым.
+    """
+    path = urlsplit((url or "").strip()).path or ""
+    out: list[str] = []
+    for part in [p for p in path.split("/") if p][:depth]:
+        part = part.lower()
+        if _NOT_SECTION_RE.match(part) or "." in part:
+            continue
+        if len(part) > 24 or part.count("-") >= 3:
+            continue
+        out.append(part)
+    return out
+
+
+def entry_sections(tags: list | None) -> list[str]:
+    """Разделы из категорий RSS. Издания кладут их и в term, и в label."""
+    out: list[str] = []
+    for tag in tags or []:
+        value = tag.get("term") if isinstance(tag, dict) else str(tag)
+        value = (value or "").strip().lower()
+        if not value or len(value) > 40:
+            continue
+        # «Gente y TV» и «gente-y-tv» — один раздел, приводим к одному виду
+        out.append(_WS_RE.sub("-", value.replace("_", "-")))
+    return out

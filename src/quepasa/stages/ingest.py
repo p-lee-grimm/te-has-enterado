@@ -17,7 +17,9 @@ import feedparser
 from ..config import get_settings
 from ..db import body_expiry, connect, insert_article, mark_fetch, title_exists
 from ..net import Limiter, RobotsCache, fetch, make_client
-from ..textutil import canonical_url, strip_html, title_hash
+from ..textutil import (
+    canonical_url, entry_sections, strip_html, title_hash, url_sections,
+)
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ class IngestStats:
     feeds_not_modified: int = 0
     entries_seen: int = 0
     entries_too_old: int = 0
+    entries_soft_section: int = 0
     dup_url: int = 0
     dup_title: int = 0
     inserted: int = 0
@@ -74,10 +77,29 @@ def _entry_summary(entry) -> str:
     return best
 
 
+def excluded_section(sections: list[str], excluded: set[str]) -> str | None:
+    """Первый раздел из списка исключённых или None.
+
+    Светская хроника и вирусное отсекаются здесь, а не классификатором:
+    раздел издания известен точно, а вызов модели стоит денег и ошибается.
+    """
+    for name in sections:
+        if name in excluded:
+            return name
+    return None
+
+
+def article_sections(url: str, entry) -> list[str]:
+    """Разделы материала: из пути URL и из категорий RSS."""
+    depth = int(get_settings().get_path("fetch.section_url_depth", 2))
+    return url_sections(url, depth) + entry_sections(entry.get("tags"))
+
+
 def parse_feed(source: dict[str, Any], body: str, stats: IngestStats) -> list[dict[str, Any]]:
     """Записи фида -> нормализованные словари статей (§3.2)."""
     s = get_settings()
     max_age = timedelta(hours=int(s.require("fetch.max_article_age_hours")))
+    excluded = {x.strip().lower() for x in s.get_path("fetch.exclude_sections", []) or []}
     now = datetime.now(timezone.utc)
 
     parsed = feedparser.parse(body)
@@ -106,6 +128,13 @@ def parse_feed(source: dict[str, Any], body: str, stats: IngestStats) -> list[di
             continue
         seen_in_feed.add(url)
 
+        sections = article_sections(link or url, entry)
+        soft = excluded_section(sections, excluded)
+        if soft:
+            # раздел из списка исключённых: до пайплайна такое не доезжает
+            stats.entries_soft_section += 1
+            continue
+
         out.append(
             {
                 "source_id": source["id"],
@@ -119,6 +148,8 @@ def parse_feed(source: dict[str, Any], body: str, stats: IngestStats) -> list[di
                 "body_expires_at": None,
                 "title_hash": title_hash(title),
                 "published_at": published or now,
+                # раздел пригодится классификатору жанра как признак
+                "section": sections[0] if sections else None,
             }
         )
     return out

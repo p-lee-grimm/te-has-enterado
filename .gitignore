@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 out/
+# размеченные выборки для калибровки классификатора
+*.jsonl
+logs/
+.env.bak.*

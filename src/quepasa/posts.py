@@ -1604,6 +1604,13 @@ def _cluster_pool(conn, *, ignore_time: bool = False,
         f"""
         SELECT c.id AS cluster_id,
                c.topic                     AS topic,
+               -- scope нужен отбору в «Коротко»: заграница без испанского
+               -- угла постом не станет и ждёт своей строки, а не выдержки
+               c.scope                     AS scope,
+               c.impact                    AS impact,
+               c.impact_reason             AS impact_reason,
+               c.impact_confidence         AS impact_confidence,
+               c.impact_at                 AS impact_at,
                count(DISTINCT a.source_id) AS n_sources,
                count(*)                    AS n_articles,
                min(a.published_at)         AS first_at,
@@ -1630,8 +1637,9 @@ def _cluster_pool(conn, *, ignore_time: bool = False,
           AND (c.expired_at IS NULL OR %(include_expired)s)
           -- сюжет, ушедший в дайджест, отдельным постом уже не выйдет (§5)
           AND (p.id IS NULL OR p.status = 'published')
-        GROUP BY c.id, c.topic, p.id, p.status, p.published_at,
-                 p.n_articles_at_publish, p.message_id
+        GROUP BY c.id, c.topic, c.scope, c.impact, c.impact_reason,
+                 c.impact_confidence, c.impact_at, p.id, p.status,
+                 p.published_at, p.n_articles_at_publish, p.message_id
         HAVING TRUE {age_clause}
         """,
         {"min_age": min_age, "include_expired": include_expired},
@@ -1747,6 +1755,67 @@ def expire_stale_candidates(conn, now) -> int:
     return len(doomed)
 
 
+def duplicate_of(conn, cluster_id: int) -> dict[str, Any] | None:
+    """Недавно вышедший пост о том же событии — или None.
+
+    Кластеризация идёт по одной статье за раз: статья попадает в лучший
+    открытый кластер, если близость к его центроиду выше порога. Два кластера
+    об одном событии заводятся, когда первые их статьи разошлись формулировкой
+    («Miles de personas se manifiestan…» и «Feijóo y Abascal coinciden…»),
+    а сойтись потом уже не могут: центроиды пересчитываются, но кластеры
+    не сливаются. Через час у обоих по десятку статей и близость 0.88 —
+    и оба выходят отдельными постами в получасе друг от друга.
+
+    Поэтому проверка стоит здесь, а не в кластеризации: слить кластеры задним
+    числом опасно (у «жары в четверг» и «жары в субботу» близость 0.93, а это
+    разные новости), а вот два поста об одном событии подряд — всегда ошибка.
+    Отсюда и узкое окно: за сутки то же событие имеет право на продолжение,
+    за час — нет.
+    """
+    from .config import get_settings
+
+    s = get_settings()
+    return conn.execute(
+        """
+        WITH me AS (SELECT centroid FROM clusters WHERE id = %(id)s)
+        SELECT p.message_id, p.cluster_id, p.published_at,
+               1 - (c.centroid <=> (SELECT centroid FROM me)) AS sim,
+               split_part(p.header_md, E'\n', 1) AS headline
+        FROM posts p
+        JOIN clusters c ON c.id = p.cluster_id
+        WHERE p.status = 'published' AND p.message_id IS NOT NULL
+          AND p.cluster_id <> %(id)s
+          AND p.published_at >= now() - make_interval(mins => %(mins)s)
+          AND c.centroid IS NOT NULL
+          AND (SELECT centroid FROM me) IS NOT NULL
+          AND 1 - (c.centroid <=> (SELECT centroid FROM me)) >= %(sim)s
+        ORDER BY sim DESC
+        LIMIT 1
+        """,
+        {"id": cluster_id,
+         # make_interval принимает целое, а окно в конфиге задано в часах
+         "mins": int(round(float(s.get_path("autopost.duplicate_window_hours", 6)) * 60)),
+         "sim": float(s.get_path("autopost.duplicate_sim", 0.86))},
+    ).fetchone()
+
+
+def mark_skipped(conn, cluster_id: int, headline: str, category: str) -> None:
+    """Закрывает сюжет от публикации: ни постом, ни строкой в «Коротко».
+
+    Тем же способом, что и дайджест: строка posts со статусом skipped выводит
+    сюжет из пула кандидатов. Иначе дубль возвращался бы каждые полчаса и
+    каждые полчаса отклонялся.
+    """
+    conn.execute(
+        """
+        INSERT INTO posts (cluster_id, header_md, category, status)
+        SELECT %s, %s, %s, 'skipped'
+        WHERE NOT EXISTS (SELECT 1 FROM posts WHERE cluster_id = %s)
+        """,
+        (cluster_id, headline, category, cluster_id),
+    )
+
+
 def repeat_state(row: dict[str, Any]) -> tuple[bool, bool]:
     """(допустить ли, продолжение ли) по правилу повтора §2.
 
@@ -1809,6 +1878,8 @@ def digest_clusters(conn, *, ignore_time: bool = False) -> list[dict[str, Any]]:
         "SELECT DISTINCT cluster_id FROM digest_items WHERE cluster_id IS NOT NULL"
     ).fetchall()}
 
+    from . import impact as impact_mod
+
     flow1, flow2 = [], []
     for r in _cluster_pool(conn, ignore_time=True, include_expired=True):
         if r["cluster_id"] in seen:
@@ -1818,11 +1889,23 @@ def digest_clusters(conn, *, ignore_time: bool = False) -> list[dict[str, Any]]:
         if age > max_age:
             continue
 
+        # Вердикт значимости берём только готовый: сюжетов здесь сотни,
+        # и звать модель на каждый ради одной строки нельзя. Кто остался
+        # без вердикта — получит его в digest.build, перед заголовком.
+        fate = impact_mod.cached_route(r)
+        if fate == impact_mod.DROP:
+            continue  # светская хроника не идёт и строкой
+
         if r.get("scope") == "world" and r["passes"]:
             flow2.append(r)
             continue
         if r["passes"]:
-            continue  # это кандидат в отдельный пост, а не в «Коротко»
+            if fate != impact_mod.DIGEST:
+                continue  # это кандидат в отдельный пост, а не в «Коротко»
+            # ветки допуска пройдены, но постом сюжет не станет: выдержка
+            # ему не нужна, ждать больше нечего
+            flow1.append(r)
+            continue
         if n_owners(political_sources(r["sources"])) < min_owners:
             continue
         # сюжету моложе min_age ещё может достаться собственный пост
@@ -1885,6 +1968,50 @@ def topic_quota_left(conn, topic: str) -> tuple[bool, str]:
         return True, ""
     return False, (f"тема «{topic}» занимает {share:.0%} последних {total} постов "
                    f"при пределе {float(cap):.0%}")
+
+
+PROVIDER_ALERT_KEY = "provider_alerted_at"
+
+
+def alert_provider_down(conn, detail: str) -> bool:
+    """Говорит владельцу, что модель не отвечает. Не чаще раза в N часов.
+
+    Сторож тишины (status.watch_silence) сообщает, что постов нет, но не
+    говорит почему, и владельцу остаётся лезть в логи. Между тем причина
+    у молчания чаще одна: провайдер перестал отвечать — протухла авторизация
+    CLI, кончился ключ, лёг API. Заголовок не генерируется, публиковать
+    нечего, и канал замолкает до тех пор, пока кто-нибудь не заметит.
+
+    3 сентября так вышло сорок три часа: авторизация `claude` истекла в 23:00,
+    каждые полчаса прогон писал восемь ошибок в лог, и никто их не читал.
+    """
+    from datetime import datetime, timezone
+
+    from .config import get_settings
+
+    hours = float(get_settings().get_path("autopost.provider_alert_hours", 6))
+    now = datetime.now(timezone.utc)
+
+    last = conn.execute(
+        "SELECT value FROM bot_state WHERE key = %s", (PROVIDER_ALERT_KEY,)
+    ).fetchone()
+    if last:
+        since = (now - datetime.fromisoformat(last["value"])).total_seconds()
+        if since < hours * 3600:
+            return False
+
+    conn.execute(
+        "INSERT INTO bot_state (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        (PROVIDER_ALERT_KEY, now.isoformat()),
+    )
+    notify_owner(
+        "⚠️ <b>Модель не отвечает — канал молчит</b>\n\n"
+        "Ни один заголовок не сгенерировался, публиковать нечего.\n\n"
+        f"<code>{detail[:300]}</code>"
+    )
+    log.warning("Сторож: провайдер не отвечает — %s", detail[:200])
+    return True
 
 
 def autopost_enabled() -> bool:
@@ -1998,6 +2125,12 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
     max_calls = int(s.get_path("autopost.max_header_calls_per_run", 0)) or room * 4
     taken = calls = 0
 
+    from . import impact as impact_mod
+
+    max_impact_calls = int(s.get_path("impact.max_calls_per_run", 12))
+    impact_calls = 0
+    last_error = ""
+
     for row in candidates:
         if taken >= room or calls >= max_calls:
             break
@@ -2014,12 +2147,66 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
                 stats["over_quota"] = stats.get("over_quota", 0) + 1
                 continue
 
+        # Два поста об одном событии подряд — всегда ошибка, и стоит она
+        # дороже пропущенной новости: читатель видит, что канал повторяется.
+        # Проверка идёт до классификатора и до заголовка: она по базе и
+        # ничего не стоит.
+        with connect() as conn:
+            twin = duplicate_of(conn, cid)
+            if twin is not None:
+                titles = row.get("titles") or [""]
+                mark_skipped(conn, cid, titles[0][:200], row.get("topic") or "")
+        if twin is not None:
+            log.info("Сюжет %s — то же событие, что и пост %s (близость %.3f): «%s»",
+                     cid, twin["message_id"], float(twin["sim"]), twin["headline"])
+            stats["duplicates"] = stats.get("duplicates", 0) + 1
+            if not dry_run:
+                # Снятый сюжет иногда несёт угол, которого в вышедшем посте
+                # нет. Решает владелец: дописать UPD к вышедшему посту он
+                # может, а вернуть снятый дубль — уже нет.
+                from .telegram import message_link
+
+                titles = row.get("titles") or [""]
+                notify_owner(
+                    "🔁 Сюжет не опубликован: то же событие, что и "
+                    f'<a href="{message_link(twin["message_id"])}">пост '
+                    f'{twin["message_id"]}</a> (близость {float(twin["sim"]):.2f}).\n\n'
+                    f"<b>{titles[0][:200]}</b>"
+                )
+            continue
+
+        # Жанр материала — до генерации заголовка. Вызов дешевле (заголовки,
+        # разделы, первый абзац), и отклонённый сюжет не платит за заголовок,
+        # которого никто не увидит. Ранжирование здесь не поможет: светская
+        # хроника собирает максимальный охват по спектру и всплывает наверх.
+        if impact_mod.enabled():
+            known = bool(row.get("impact")) and impact_mod.is_fresh(row.get("impact_at"))
+            if not known and impact_calls >= max_impact_calls:
+                # без вердикта публиковать нельзя, а вызовы кончились:
+                # остаток пула подождёт следующего прогона
+                stats["impact_capped"] = True
+                break
+            fate, verdict = impact_mod.classify_row(row)
+            if not known:
+                impact_calls += 1
+            if fate == impact_mod.DROP:
+                log.info("Сюжет %s не публикуется: impact=%s (%s)", cid,
+                         verdict["impact"], verdict.get("reason", ""))
+                stats["skipped_soft"] = stats.get("skipped_soft", 0) + 1
+                continue
+            if fate == impact_mod.DIGEST:
+                log.info("Сюжет %s — не пост, а строка в «Коротко»: impact=%s (%s)",
+                         cid, verdict["impact"], verdict.get("confidence"))
+                stats["to_digest"] = stats.get("to_digest", 0) + 1
+                continue
+
         calls += 1
         try:
             header, topic, meta = generate_header(cid)
         except Exception as exc:  # noqa: BLE001 — один сюжет не роняет остальные
             log.warning("Сюжет %s: заголовок не сгенерировался: %s", cid, exc)
             stats["errors"] += 1
+            last_error = str(exc)
             continue
 
         # тему запоминаем на сюжете: она понадобится следующему прогону,
@@ -2162,6 +2349,12 @@ def autopost(dry_run: bool = True) -> dict[str, Any]:  # noqa: C901
         except Exception as exc:  # noqa: BLE001
             log.warning("Сюжет %s не опубликовался: %s", cid, exc)
             stats["errors"] += 1
+
+    # Ни одного поста при том, что кандидаты были и все они упали, —
+    # это не «сегодня нечего публиковать», а поломка, и молчать о ней нельзя.
+    if not dry_run and last_error and not stats["published"]:
+        with connect() as conn:
+            stats["provider_alert"] = alert_provider_down(conn, last_error)
 
     # очередь неразрешённых — рабочий список владельца, а не служебная таблица:
     # о пополнении надо сказать, иначе о ней никто не вспомнит

@@ -78,9 +78,11 @@ def _stage_ingest(ctx: Context) -> None:
     ctx.articles = articles
     ctx.stage_stats["ingest"] = stats.as_dict()
     log.info(
-        "Фиды: %s/%s ok, статей: %s (новых %s, дублей %s), тексты: %s",
+        "Фиды: %s/%s ok, статей: %s (новых %s, дублей %s, светских разделов %s), "
+        "тексты: %s",
         stats.feeds_ok, stats.feeds_total, stats.entries_seen,
-        stats.inserted, stats.dup_url + stats.dup_title, stats.bodies_fetched,
+        stats.inserted, stats.dup_url + stats.dup_title,
+        stats.entries_soft_section, stats.bodies_fetched,
     )
     for f in stats.failures:
         log.warning("  битый фид — %s", f)

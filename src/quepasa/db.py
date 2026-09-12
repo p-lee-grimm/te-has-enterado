@@ -133,9 +133,10 @@ def insert_article(conn: psycopg.Connection, art: dict[str, Any]) -> int | None:
         """
         INSERT INTO articles
             (source_id, url_canonical, url, title, summary_feed, body, body_expires_at,
-             title_hash, published_at)
+             title_hash, published_at, section)
         VALUES (%(source_id)s, %(url_canonical)s, %(url)s, %(title)s, %(summary_feed)s,
-                %(body)s, %(body_expires_at)s, %(title_hash)s, %(published_at)s)
+                %(body)s, %(body_expires_at)s, %(title_hash)s, %(published_at)s,
+                %(section)s)
         ON CONFLICT (url_canonical) DO NOTHING
         RETURNING id
         """,

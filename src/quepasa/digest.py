@@ -229,9 +229,19 @@ def build(dry_run: bool = True) -> dict[str, Any]:
         articles = {c["cluster_id"]: cluster_articles(conn, c["cluster_id"])
                     for c in candidates}
 
+    from . import impact as impact_mod
+
     items: list[dict[str, Any]] = []
     for c in candidates:
         cid = c["cluster_id"]
+
+        # Сюжеты без вердикта доходят сюда неразобранными: в отбор строк
+        # модель не зовут. Разбираем перед заголовком — светская хроника
+        # не должна занимать строку, а вызов дешевле генерации заголовка.
+        if impact_mod.classify_row(c)[0] == impact_mod.DROP:
+            stats["dropped_soft"] = stats.get("dropped_soft", 0) + 1
+            continue
+
         try:
             header, topic, _ = generate_header(cid)
         except Exception as exc:  # noqa: BLE001 — один сюжет не роняет дайджест

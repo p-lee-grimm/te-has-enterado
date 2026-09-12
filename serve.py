@@ -387,6 +387,7 @@ def view_clusters() -> str:
         rows = conn.execute(
             """
             SELECT c.id, c.n_articles, c.n_sources, c.score, c.last_seen_at,
+                   c.impact, c.impact_confidence, c.impact_reason,
                    count(DISTINCT s.lean) AS lean_spread,
                    (array_agg(a.title ORDER BY a.published_at DESC))[1] AS sample,
                    string_agg(DISTINCT s.name, ', ') AS outlets
@@ -405,10 +406,23 @@ def view_clusters() -> str:
         return ('<h1>Сюжеты</h1><div class="empty">Сюжетов с несколькими '
                 "источниками пока нет. Прогони ingest и cluster.</div>")
 
+    # вердикт значимости показываем как есть: во время калибровки промпта
+    # смотреть на него глазами приходится чаще, чем на скор
+    marks = {"consequential": "пост", "background": "коротко", "soft": "не публ."}
+
+    def impact_cell(r) -> str:
+        if not r["impact"]:
+            return '<td class=dim>—</td>'
+        mark = marks.get(r["impact"], r["impact"])
+        if r["impact_confidence"] == "low":
+            mark += "?"
+        return f'<td class=dim title="{e(r["impact_reason"] or "")}">{mark}</td>'
+
     trs = "".join(
         f'<tr class="{"hi" if r["n_sources"] >= 3 else ""}">'
         f'<td><b>{r["n_sources"]}</b></td><td>{r["n_articles"]}</td>'
         f'<td>{r["lean_spread"]}</td><td>{float(r["score"]):.1f}</td>'
+        f'{impact_cell(r)}'
         f'<td>{e(r["sample"] or "")}<div class=dim style="margin-top:3px">'
         f'{e(r["outlets"])}</div></td>'
         f'<td><a href="/post?cluster={r["id"]}">пост →</a></td></tr>'
@@ -416,9 +430,11 @@ def view_clusters() -> str:
     )
     return f"""<h1>Открытые сюжеты</h1>
 <div class=sub>Подсвечены те, что проходят порог «≥3 уникальных источника» —
-только они могут попасть в выпуск.</div>
+только они могут попасть в выпуск. Столбец «жанр» — вердикт классификатора
+значимости, «?» означает пограничный случай; наведи курсор, чтобы увидеть
+причину.</div>
 <table><tr><th>ист.</th><th>статей</th><th>полюсов</th><th>скор</th>
-<th>сюжет</th><th></th></tr>{trs}</table>"""
+<th>жанр</th><th>сюжет</th><th></th></tr>{trs}</table>"""
 
 
 def view_digest() -> str:

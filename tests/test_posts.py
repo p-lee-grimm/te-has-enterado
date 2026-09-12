@@ -414,3 +414,17 @@ class TestUnpublishChain:
                  if "clusters" in q and "last_post_message_id" in q]
         assert chain, "цепочка сюжета осталась указывать на удалённое сообщение"
         assert chain[0][1] == (125,)
+
+
+# ------------------------------------------------------------------ дубли
+
+def test_duplicate_guard_thresholds_live_in_config():
+    """Порог и окно измерены по каналу, а не выдуманы: 0.86 отделяет дубль
+    («демонстрации в защиту Сеуты» 0.878) от разных новостей (скидка
+    на дизель и инфляция — 0.857), 6 часов отделяют дубль от законного
+    продолжения сюжета (переселение мигрантов и уборка пляжа — 8 часов)."""
+    from quepasa.config import get_settings
+
+    s = get_settings()
+    assert 0.857 < float(s.require("autopost.duplicate_sim")) <= 0.878
+    assert 6 <= float(s.require("autopost.duplicate_window_hours")) < 8
