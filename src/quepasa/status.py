@@ -139,12 +139,40 @@ def checks(data: dict[str, Any]) -> list[tuple[str, bool, str]]:
 WATCH_KEY = "silence_alerted_at"
 
 
+def _open_window_hours(t0, t1, lo: int, hi: int) -> float:
+    """Сколько часов из отрезка [t0, t1) пришлось на окно публикации [lo, hi).
+
+    Ночь считать молчанием нельзя: окно закрыто с hi до lo следующего дня
+    по расписанию, а не потому что что-то сломалось. Без этой поправки
+    пост, вышедший вчера в 20:55 перед закрытием окна, в 9:05 утра давал
+    «канал молчит 13 ч» — хотя с открытия окна прошло пять минут.
+    """
+    from datetime import datetime as _dt, time as _time, timedelta as _td
+
+    if t0 >= t1:
+        return 0.0
+
+    total = 0.0
+    day = t0.date()
+    while day <= t1.date():
+        day_start = _dt.combine(day, _time(lo, 0), tzinfo=t0.tzinfo)
+        day_end = _dt.combine(day, _time(hi, 0), tzinfo=t0.tzinfo)
+        lo_clip, hi_clip = max(day_start, t0), min(day_end, t1)
+        if hi_clip > lo_clip:
+            total += (hi_clip - lo_clip).total_seconds() / 3600
+        day += _td(days=1)
+    return total
+
+
 def watch_silence(now=None) -> str | None:
     """Сообщает владельцу, если канал молчит внутри окна публикации.
 
     Три дня без постов прошли незамеченными: автопостинг не запускался,
     потому что зависший прогон держал лок, а узнать об этом было неоткуда —
     статус смотрят руками, а руками его никто не смотрит.
+
+    Молчание считается только в часах окна публикации (см. _open_window_hours):
+    ночь, когда постов и не должно быть, в счёт не идёт.
 
     Сообщение шлётся один раз в сутки: сторож, который пишет каждые пять
     минут, перестаёт читаться на второй час.
@@ -171,13 +199,13 @@ def watch_silence(now=None) -> str | None:
 
     with connect() as conn:
         row = conn.execute(
-            """
-            SELECT EXTRACT(EPOCH FROM (now() - max(published_at))) / 3600 AS h
-            FROM posts WHERE status = 'published'
-            """
+            "SELECT max(published_at) AS last FROM posts WHERE status = 'published'"
         ).fetchone()
-        age = float(row["h"]) if row and row["h"] is not None else None
-        if age is None or age < limit:
+        last = row["last"] if row else None
+        if last is None:
+            return None
+        age = _open_window_hours(last.astimezone(tz), now, lo, hi)
+        if age < limit:
             return None
 
         last = conn.execute(

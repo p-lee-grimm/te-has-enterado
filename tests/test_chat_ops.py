@@ -82,7 +82,10 @@ class TestSilenceWatchdog:
     """
 
     @staticmethod
-    def _run(monkeypatch, hour, age_h, alerted=None):
+    def _run(monkeypatch, hour, last_at, alerted=None, day=28):
+        """`last_at` — реальный момент последнего поста (не число часов):
+        watch_silence считает молчание в часах ОКНА публикации, а не в часах
+        настенных, и абсолютная давность сама по себе ничего не проверяет."""
         import datetime as dt
 
         import quepasa.status as st
@@ -93,7 +96,7 @@ class TestSilenceWatchdog:
         class Conn:
             def execute(self, sql, params=None):
                 if "max(published_at)" in sql:
-                    return type("R", (), {"fetchone": lambda s: {"h": age_h}})()
+                    return type("R", (), {"fetchone": lambda s: {"last": last_at}})()
                 if "bot_state" in sql and sql.strip().startswith("SELECT"):
                     row = {"value": alerted} if alerted else None
                     return type("R", (), {"fetchone": lambda s: row})()
@@ -105,24 +108,82 @@ class TestSilenceWatchdog:
         monkeypatch.setattr(db, "connect", lambda *a, **k: Conn())
 
         from zoneinfo import ZoneInfo
-        now = dt.datetime(2026, 8, 28, hour, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+        now = dt.datetime(2026, 8, day, hour, 0, tzinfo=ZoneInfo("Europe/Madrid"))
         st.watch_silence(now=now)
         return sent
 
+    @staticmethod
+    def _ago(hours, day=28, hour=14):
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+
+        now = dt.datetime(2026, 8, day, hour, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+        return now - dt.timedelta(hours=hours)
+
     def test_alerts_inside_window(self, monkeypatch):
-        assert self._run(monkeypatch, hour=14, age_h=72.0)
+        """Три дня простоя — реальная поломка, и часть их пришлась на окна."""
+        assert self._run(monkeypatch, hour=14, last_at=self._ago(72))
 
     def test_silent_outside_window(self, monkeypatch):
         """Ночью тишина штатная — будить из-за неё нельзя."""
-        assert not self._run(monkeypatch, hour=3, age_h=72.0)
+        assert not self._run(monkeypatch, hour=3, last_at=self._ago(72, hour=3))
 
     def test_silent_when_posts_are_fresh(self, monkeypatch):
-        assert not self._run(monkeypatch, hour=14, age_h=1.0)
+        assert not self._run(monkeypatch, hour=14, last_at=self._ago(1))
 
     def test_not_repeated_within_a_day(self, monkeypatch):
         """Сторож, пишущий каждые пять минут, перестают читать."""
         recent = "2026-08-28T10:00:00+02:00"
-        assert not self._run(monkeypatch, hour=14, age_h=72.0, alerted=recent)
+        assert not self._run(monkeypatch, hour=14, last_at=self._ago(72), alerted=recent)
+
+    def test_overnight_gap_is_not_silence(self, monkeypatch):
+        """Ровно тот баг: пост вышел вчера в 20:55, перед закрытием окна
+        в 21:00. Сегодня в 9:05, через пять минут после открытия, сторож
+        писал «канал молчит 13 ч» — хотя окно только открылось."""
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+
+        last_at = dt.datetime(2026, 8, 27, 20, 55, tzinfo=ZoneInfo("Europe/Madrid"))
+        now = dt.datetime(2026, 8, 28, 9, 5, tzinfo=ZoneInfo("Europe/Madrid"))
+        import quepasa.status as st
+        import quepasa.telegram as tg
+        sent = []
+        monkeypatch.setattr(tg, "notify_owner", lambda t, **k: sent.append(t))
+
+        class Conn:
+            def execute(self, sql, params=None):
+                if "max(published_at)" in sql:
+                    return type("R", (), {"fetchone": lambda s: {"last": last_at}})()
+                return type("R", (), {"fetchone": lambda s: None})()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        import quepasa.db as db
+        monkeypatch.setattr(db, "connect", lambda *a, **k: Conn())
+        st.watch_silence(now=now)
+        assert not sent
+
+    def test_multi_day_outage_still_alerts_soon_after_open(self, monkeypatch):
+        """Настоящая многодневная поломка не должна тонуть в поправке на ночь:
+        трое суток простоя дают часов окна намного больше порога, даже если
+        сейчас 9:00 — момент, когда окно только открылось и сегодня ещё
+        ни минуты не прошло."""
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+
+        last_at = dt.datetime(2026, 8, 25, 14, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+        assert self._run(monkeypatch, hour=9, last_at=last_at, day=28)
+
+    def test_open_window_hours_skips_the_night(self):
+        """25 авг 14:00 -> 28 авг 9:30, окно 9-21: 7 + 12 + 12 + 0.5 = 31.5 ч."""
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+
+        from quepasa.status import _open_window_hours
+
+        t0 = dt.datetime(2026, 8, 25, 14, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+        t1 = dt.datetime(2026, 8, 28, 9, 30, tzinfo=ZoneInfo("Europe/Madrid"))
+        assert _open_window_hours(t0, t1, 9, 21) == pytest.approx(31.5)
 
 
 class TestPublicationCheck:
