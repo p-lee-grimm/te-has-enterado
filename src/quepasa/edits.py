@@ -46,16 +46,37 @@ def _diff_call(published_md: str, titles: list[tuple[str, str]],
 
 
 def candidates(conn) -> list[dict[str, Any]]:
-    """Посты в окне дописывания."""
+    """Посты в окне дописывания, которым действительно есть смысл проверяться.
+
+    Раньше сюда попадал весь пост в 12-часовом окне на каждом тике крона —
+    до 24 вызовов модели за жизнь поста, притом что источники правятся
+    редко. Замер по логам: из 112 прогонов расхождение нашлось в 33,
+    и почти всегда на одном посте из пяти-семи проверенных.
+
+    Теперь пост берётся на проверку по любому из двух условий:
+      - у сюжета прибавилось статей с прошлой проверки — есть повод;
+      - проверки не было дольше check_facts_min_interval_hours — подстраховка
+        на случай, когда источник переписал текст без новой публикации.
+    Ещё не проверенные посты (facts_checked_at IS NULL) идут всегда.
+    """
     hours = int(get_settings().get_path("autopost.edit_window_hours", 12))
+    # make_interval принимает целое, а порог в конфиге задан часами (может
+    # быть дробным) — переводим в минуты и округляем перед передачей
+    min_interval_mins = int(round(float(get_settings().get_path(
+        "autopost.check_facts_min_interval_hours", 3)) * 60))
     return conn.execute(
         """
         SELECT p.*, c.n_articles
         FROM posts p JOIN clusters c ON c.id = p.cluster_id
         WHERE p.status = 'published' AND p.message_id IS NOT NULL
           AND p.published_at >= now() - make_interval(hours => %s)
+          AND (
+              p.facts_checked_at IS NULL
+              OR c.n_articles > COALESCE(p.n_articles_at_check, -1)
+              OR p.facts_checked_at < now() - make_interval(mins => %s)
+          )
         """,
-        (hours,),
+        (hours, min_interval_mins),
     ).fetchall()
 
 
@@ -156,6 +177,14 @@ def run(dry_run: bool = True) -> dict[str, Any]:
     for post in posts_:
         with connect() as conn:
             upd = check_post(conn, post)
+            if not dry_run:
+                # штамп ставится независимо от результата: «расхождений нет»
+                # тоже причина не спрашивать модель снова раньше срока
+                conn.execute(
+                    "UPDATE posts SET facts_checked_at = now(), "
+                    "n_articles_at_check = %s WHERE id = %s",
+                    (post.get("n_articles"), post["id"]),
+                )
             if upd is None:
                 continue
             stats["changed"] += 1
